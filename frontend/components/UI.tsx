@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep } from '../types';
 import { simState } from '../simState';
+import { PartPreview3D } from './PartPreview3D';
 
 const PICK_COLORS = [
     { label: 'Red', value: '#ef4444' },
@@ -49,6 +50,82 @@ const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { labe
     );
 };
 
+const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCancel, onValidate }: { item: PlacedItem, updateItem: (updates: Partial<PlacedItem>) => void, isDraft?: boolean, snapStep: number, heightStep: number, onCancel?: () => void, onValidate?: () => void }) => {
+    const snapValue = (val: number, step: number) => Math.round(val / step) * step;
+    
+    const patchPosition = (axis: 0 | 1 | 2, value: number) => {
+        const next = [...item.position] as [number, number, number];
+        next[axis] = snapValue(value, axis === 1 ? heightStep : snapStep);
+        updateItem({ position: next });
+    };
+    const patchSize = (axis: 0 | 1, value: number) => {
+        const currentSize = item.config?.machineSize || item.config?.beltSize || item.config?.tableSize || [2.5, 2.5];
+        const next = [...currentSize] as [number, number];
+        next[axis] = Math.max(0.5, snapValue(value, snapStep));
+        if (item.type === 'belt') updateItem({ config: { ...item.config, beltSize: next } });
+        else if (item.type === 'table') updateItem({ config: { ...item.config, tableSize: next } });
+        else updateItem({ config: { ...item.config, machineSize: next } });
+    };
+    const patchHeight = (value: number) => {
+        const v = Math.max(0.1, snapValue(value, heightStep));
+        if (item.type === 'belt') updateItem({ config: { ...item.config, beltHeight: v } });
+        else if (item.type === 'table') updateItem({ config: { ...item.config, tableHeight: v } });
+        else updateItem({ config: { ...item.config, machineHeight: v } });
+    };
+
+    const hasSize = ['sender', 'receiver', 'indexed_receiver', 'pile', 'belt', 'table'].includes(item.type);
+
+    return (
+        <div className="flex flex-col gap-3 w-full">
+            <div className="flex justify-between items-center text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                <span>Transform & Resize</span>
+                {isDraft && <span className="bg-yellow-500/20 text-yellow-300 px-2 py-0.5 rounded text-[9px] animate-pulse">Click grid to teleport</span>}
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+                <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={item.position[0]} onChange={(v) => patchPosition(0, v)} />
+                <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={item.position[1]} onChange={(v) => patchPosition(1, v)} />
+                <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={item.position[2]} onChange={(v) => patchPosition(2, v)} />
+            </div>
+            <button onClick={() => updateItem({ rotation: ((item.rotation + 1) % 4) as Direction })} className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white rounded p-1.5 flex items-center justify-center gap-2 font-bold text-[10px] transition-colors">
+                <RotateCw size={12} /> ROTATE 90°
+            </button>
+            {hasSize && (
+                <div className="grid grid-cols-3 gap-3">
+                    <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={item.config?.machineSize?.[0] || item.config?.beltSize?.[0] || item.config?.tableSize?.[0] || 2.5} onChange={(v) => patchSize(0, v)} />
+                    <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={item.config?.machineSize?.[1] || item.config?.beltSize?.[1] || item.config?.tableSize?.[1] || 2.5} onChange={(v) => patchSize(1, v)} />
+                    <RangeSlider label="HEIGHT" min={0.1} max={1.5} step={heightStep} value={item.config?.machineHeight || item.config?.beltHeight || item.config?.tableHeight || (item.type === 'pile' ? 0.7 : 0.538)} onChange={(v) => patchHeight(v)} />
+                </div>
+            )}
+            {item.type === 'pile' && (
+                <div className="flex flex-col gap-3 mt-1">
+                    <div className="grid grid-cols-2 gap-3">
+                        <RangeSlider label="GRID W" min={1} max={6} step={1} value={item.config?.tableGrid?.[0] || 3} onChange={(v) => updateItem({ config: { ...item.config, tableGrid: [v, item.config?.tableGrid?.[1] || 3] } })} />
+                        <RangeSlider label="GRID D" min={1} max={6} step={1} value={item.config?.tableGrid?.[1] || 3} onChange={(v) => updateItem({ config: { ...item.config, tableGrid: [item.config?.tableGrid?.[0] || 3, v] } })} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 items-end">
+                        <RangeSlider label="STARTING ITEMS" min={0} max={24} step={1} value={item.config?.pileCount ?? 0} onChange={(v) => updateItem({ config: { ...item.config, pileCount: v } })} />
+                        <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-[34px]">
+                            <span className="text-[10px] font-bold text-gray-500">SHOW WALLS</span>
+                            <input
+                                type="checkbox"
+                                checked={item.config?.showWalls !== false}
+                                onChange={(e) => updateItem({ config: { ...item.config, showWalls: e.target.checked } })}
+                                className="accent-[#38bdf8]"
+                            />
+                        </label>
+                    </div>
+                </div>
+            )}
+            {(onCancel || onValidate) && (
+                <div className="flex gap-2 mt-1">
+                    {onCancel && <button onClick={onCancel} className="flex-1 bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white rounded py-2 font-bold text-[10px] transition-colors border border-red-500/30">CANCEL</button>}
+                    {onValidate && <button onClick={onValidate} className="flex-1 rounded py-2 font-bold text-[10px] transition-colors bg-emerald-500 text-white hover:bg-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.4)]">CONFIRM</button>}
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const UI: React.FC = () => {
     const [showVisionConfig, setShowVisionConfig] = useState(false);
     const [showController, setShowController] = useState(false);
@@ -60,6 +137,8 @@ export const UI: React.FC = () => {
     const [playClicks, setPlayClicks] = useState({ count: 0, time: 0 });
     const [showPartCreator, setShowPartCreator] = useState(false);
     const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
+    const [showStopConfirm, setShowStopConfirm] = useState(false);
+    const [keepBuilding, setKeepBuilding] = useState(false);
     const { 
         credits, 
         score,
@@ -85,7 +164,13 @@ export const UI: React.FC = () => {
         addPartTemplate,
         updatePartTemplate,
         removePartTemplate,
-        clonePartTemplate
+        clonePartTemplate,
+        draftPlacement,
+        setDraftPlacement,
+        addPlacedItem,
+        moveModeItemId,
+        setMoveModeItemId,
+        moveModeOriginalItem
     } = useFactoryStore();
 
     const selectedItem = placedItems.find(i => i.id === selectedItemId);
@@ -148,26 +233,41 @@ export const UI: React.FC = () => {
         const now = Date.now();
         if (now - playClicks.time < 500) {
             const newCount = playClicks.count + 1;
-            if (newCount >= 4) { // 5th click (0-4)
-                useFactoryStore.getState().setCredits(credits + 10000);
+            if (newCount >= 4) { // 5th rapid click total (0,1,2,3,4 → trigger)
+                setCredits(credits + 10000);
                 setPlayClicks({ count: 0, time: 0 });
             } else {
                 setPlayClicks({ count: newCount, time: now });
             }
         } else {
-            setPlayClicks({ count: 1, time: now });
+            setPlayClicks({ count: 0, time: now }); // reset to 0 on first click
         }
     };
 
     const handleStopClick = () => {
-        if (isRunning || isPaused) {
-            const ok = window.confirm('Reset simulation and clear all moving parts?');
-            if (!ok) return;
+        // Always show confirm popup — never do a silent reset
+        setShowStopConfirm(true);
+    };
+
+    const handleValidateDraft = () => {
+        if (!draftPlacement) return;
+        const cost = ITEM_COSTS[draftPlacement.type];
+        if (credits >= cost) {
+            const { id, ...rest } = draftPlacement;
+            addPlacedItem(rest);
+            setDraftPlacement(null);
+            if (!keepBuilding) {
+                setBuildMode(null);
+            }
         }
+    };
+
+    const doStop = () => {
+        setShowStopConfirm(false);
         setIsRunning(false);
         setIsPaused(false);
         simState.reset();
-        useFactoryStore.getState().placedItems.forEach(item => {
+        placedItems.forEach(item => {
             if (item.type === 'cobot') {
                 updatePlacedItem(item.id, { config: { ...item.config, isStopped: false } });
             }
@@ -374,61 +474,23 @@ export const UI: React.FC = () => {
         updatePartTemplate(activeTemplate.id, updates);
     };
 
-
-    const renderModuleLayoutControls = () => {
-        if (!selectedItem || !moduleConfigTypes.includes(selectedItem.type)) return null;
-        return (
-            <div className="flex flex-col gap-3 w-full">
-                <div className="grid grid-cols-3 gap-3">
-                    <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
-                    <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
-                    <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                    <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.machineSize?.[0] || 2} onChange={(v) => patchMachineSize(0, v)} />
-                    <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.machineSize?.[1] || 2} onChange={(v) => patchMachineSize(1, v)} />
-                    <RangeSlider label="HEIGHT" min={0.1} max={1.5} step={heightStep} value={selectedItem.config?.machineHeight || (selectedItem.type === 'pile' ? 0.7 : 0.538)} onChange={(v) => patchMachineHeight(v)} />
-                </div>
-                {selectedItem.type === 'pile' && (
-                    <div className="flex flex-col gap-3 mt-1">
-                        <div className="grid grid-cols-2 gap-3">
-                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
-                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
-                        </div>
-                        <div className="grid grid-cols-2 gap-3 items-end">
-                            <RangeSlider label="STARTING ITEMS" min={0} max={24} step={1} value={selectedItem.config?.pileCount ?? 0} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, pileCount: v } })} />
-                            <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-[34px]">
-                                <span className="text-[10px] font-bold text-gray-500">SHOW WALLS</span>
-                                <input
-                                    type="checkbox"
-                                    checked={selectedItem.config?.showWalls !== false}
-                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showWalls: e.target.checked } })}
-                                    className="accent-[#38bdf8]"
-                                />
-                            </label>
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    };
-
     return (
-        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-6">
+        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-2 sm:p-6">
             {/* Top Bar */}
             <div className="flex justify-between items-start">
                 <div className="flex flex-col gap-4 pointer-events-auto">
                     <div>
-                        <h1 className="text-4xl font-display font-black text-blue-400 tracking-tight drop-shadow-md">
+                        <h1 className="text-2xl sm:text-4xl font-display font-black text-blue-400 tracking-tight drop-shadow-md">
                             COBOT FACTORY
                         </h1>
-                        <p className="text-gray-400 font-mono text-sm mt-1">Simulation Sandbox</p>
+                        <p className="hidden sm:block text-gray-400 font-mono text-sm mt-1">Simulation Sandbox</p>
                     </div>
                 </div>
 
                 <div className="flex flex-col gap-2 pointer-events-auto items-end">
-                    <label className="bg-gray-900/90 backdrop-blur-md rounded-xl px-4 py-2 shadow-xl border border-gray-700 flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 transition-colors">
-                        <span className="text-[10px] font-bold text-gray-400">SNAP 0.5 GRID</span>
+                    <label className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 py-1.5 sm:px-4 sm:py-2 shadow-xl border border-gray-700 flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 transition-colors">
+                        <span className="text-[10px] font-bold text-gray-400 hidden sm:inline">SNAP 0.5 GRID</span>
+                        <span className="text-[10px] font-bold text-gray-400 sm:hidden">SNAP</span>
                         <input
                             type="checkbox"
                             checked={snapInputs}
@@ -460,15 +522,40 @@ export const UI: React.FC = () => {
             </div>
 
             {/* Bottom Area */}
-            <div className="flex flex-col items-center gap-4 pointer-events-auto">
+            <div className="flex flex-col items-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-full">
                 
-                {selectedItem ? (
+                {draftPlacement ? (
+                    <div className="bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-gray-700 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto">
+                        <div className="text-sm font-black text-yellow-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
+                            <span className="flex items-center gap-2"><Settings2 size={16} /> PLACE {draftPlacement.type === 'sender' ? 'PART SPAWNER' : draftPlacement.type.toUpperCase()}</span>
+                            <span className="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-xs border border-gray-600">{ITEM_COSTS[draftPlacement.type]} CR</span>
+                        </div>
+                        <div className="border-t border-gray-700/50 pt-3 mt-1">
+                            <TransformPanel item={draftPlacement} updateItem={(updates) => setDraftPlacement({ ...draftPlacement, ...updates })} isDraft={true} snapStep={snapStep} heightStep={heightStep} />
+                        </div>
+                        <label className="flex items-center gap-2 text-xs font-bold text-gray-400 mt-1 cursor-pointer">
+                            <input type="checkbox" checked={keepBuilding} onChange={e => setKeepBuilding(e.target.checked)} className="accent-[#38bdf8] w-4 h-4 cursor-pointer" />
+                            Keep placing after validation
+                        </label>
+                        <div className="flex gap-2 mt-1">
+                            <button onClick={() => { setDraftPlacement(null); if (!keepBuilding) setBuildMode(null); }} className="flex-1 bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white rounded py-2.5 font-bold text-xs transition-colors border border-red-500/30">CANCEL</button>
+                            <button onClick={handleValidateDraft} disabled={credits < ITEM_COSTS[draftPlacement.type]} className={`flex-1 rounded py-2.5 font-bold text-xs transition-colors ${credits >= ITEM_COSTS[draftPlacement.type] ? 'bg-emerald-500 text-white hover:bg-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'bg-gray-600 text-gray-400 cursor-not-allowed'}`}>VALIDATE</button>
+                        </div>
+                    </div>
+                ) : moveModeItemId && selectedItem && moveModeItemId === selectedItem.id ? (
+                    <div className="bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-blue-500 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto">
+                        <div className="text-sm font-black text-blue-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
+                            <span className="flex items-center gap-2"><Move size={16} /> MOVING {selectedItem.type.toUpperCase()}</span>
+                        </div>
+                        <TransformPanel item={selectedItem} updateItem={(updates) => updatePlacedItem(selectedItem.id, updates)} isDraft={true} snapStep={snapStep} heightStep={heightStep} onCancel={() => { if (moveModeOriginalItem) { updatePlacedItem(selectedItem.id, moveModeOriginalItem); } setMoveModeItemId(null); }} onValidate={() => setMoveModeItemId(null)} />
+                    </div>
+                ) : selectedItem ? (
                     /* SELECTION PANEL */
-                    <div className={`bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border p-2 flex flex-col gap-1.5 w-[min(540px,calc(100vw-48px))] max-h-[85vh] overflow-y-auto animate-fade-in ${statusTone.panel}`}>
+                    <div className={`bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border p-2 flex flex-col gap-1.5 w-[min(540px,calc(100vw-16px))] max-h-[80vh] overflow-y-auto animate-fade-in ${statusTone.panel}`}>
                         <div className="flex justify-between items-center border-b border-gray-700 pb-1.5">
                             <div className="flex min-w-0 items-center gap-2 text-yellow-400 font-black tracking-wider">
                                 <Settings2 size={18} className="shrink-0" />
-                                <span className="text-sm shrink-0">{selectedItem.type.toUpperCase()}</span>
+                                <span className="text-sm shrink-0">{selectedItem.type === 'sender' ? 'PART SPAWNER' : selectedItem.type.toUpperCase()}</span>
                                 {editingName ? (
                                     <input
                                         autoFocus
@@ -544,25 +631,16 @@ export const UI: React.FC = () => {
                             <div className="flex flex-col gap-1.5 flex-1">
                                 <div className={`rounded-lg overflow-hidden flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'bg-transparent px-0 pb-0' : 'bg-gray-800/50 border border-gray-700 px-2 pb-2'}`}>
                                     <div className={`flex flex-col gap-1.5 w-full ${selectedItem.type === 'cobot' ? '' : 'pt-2'}`}>
-                                        {!teachMinimized && renderModuleLayoutControls()}
                                 {selectedItem.type === 'sender' && !teachMinimized && (
                                     <div className="flex flex-col gap-2 w-full">
-                                        <div className="flex justify-between">
-                                            <span className="text-xs font-bold text-gray-500">SPAWN INTERVAL</span>
-                                            <span className="text-xs font-bold text-blue-400">{selectedItem.config?.speed || 3}s</span>
-                                        </div>
-                                        <input 
-                                            type="range" min="0.5" max="5" step="0.5" 
-                                            value={selectedItem.config?.speed || 3} 
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: parseFloat(e.target.value) } })} 
-                                        />
-                                        <div className="flex items-center justify-between mt-2 gap-2">
-                                            <span className="text-xs font-bold text-gray-500">PART TEMPLATE</span>
+                                        <RangeSlider label="SPAWN INTERVAL" min={0.5} max={10} step={0.5} value={selectedItem.config?.speed || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+                                        <div className="flex items-center justify-between mt-1 gap-2">
+                                            <span className="text-xs font-bold text-gray-500">PART TEMPLATE CLASS</span>
                                             <button
                                                 onClick={openPartCreator}
                                                 className="px-2 py-1 rounded border border-cyan-600/50 bg-cyan-500/10 text-cyan-200 text-[10px] font-bold hover:bg-cyan-500/20"
                                             >
-                                                PART CREATOR
+                                                ✦ PART CREATOR
                                             </button>
                                         </div>
                                         <select
@@ -570,55 +648,44 @@ export const UI: React.FC = () => {
                                             value={selectedItem.config?.spawnTemplateId || 'any'}
                                             onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnTemplateId: e.target.value } })}
                                         >
-                                            <option value="any">Any Template (Random)</option>
+                                            <option value="any">All Templates (Random)</option>
                                             {partTemplates.map(tpl => (
                                                 <option key={tpl.id} value={tpl.id}>
-                                                    {tpl.name} ({tpl.shape}, {tpl.size})
+                                                    {tpl.name} — {tpl.shape}
                                                 </option>
                                             ))}
                                         </select>
-                                        <div className="flex justify-between mt-2">
-                                            <span className="text-xs font-bold text-gray-500">ITEM COLOR</span>
-                                        </div>
-                                        <select 
-                                            className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
-                                            value={selectedItem.config?.spawnColor || 'any'}
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnColor: e.target.value } })}
-                                        >
-                                            <option value="any">Any Color (Random)</option>
-                                            <option value="#ef4444">Red</option>
-                                            <option value="#3b82f6">Blue</option>
-                                            <option value="#10b981">Green</option>
-                                            <option value="#f59e0b">Yellow</option>
-                                        </select>
-                                        <div className="flex justify-between mt-2">
-                                            <span className="text-xs font-bold text-gray-500">ITEM SIZE</span>
-                                        </div>
-                                        <select
-                                            className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
-                                            value={selectedItem.config?.spawnSize || 'any'}
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnSize: e.target.value as PartSize | 'any' } })}
-                                        >
-                                            <option value="any">Any Size (Random)</option>
-                                            <option value="small">Small</option>
-                                            <option value="medium">Medium</option>
-                                            <option value="large">Large</option>
-                                        </select>
+                                        {/* Show the selected template's color/size pools */}
+                                        {(() => {
+                                            const tid = selectedItem.config?.spawnTemplateId;
+                                            const tpl = tid && tid !== 'any' ? partTemplates.find(t => t.id === tid) : null;
+                                            if (!tpl) return (
+                                                <p className="text-[10px] text-gray-500 italic">Spawning randomly from all templates. Configure pools in Part Creator.</p>
+                                            );
+                                            const colors = tpl.spawnColors?.length ? tpl.spawnColors : [tpl.color];
+                                            const sizes = tpl.spawnSizes?.length ? tpl.spawnSizes : [tpl.size];
+                                            return (
+                                                <div className="rounded-lg bg-gray-800/60 border border-gray-700 p-2 flex flex-col gap-1.5">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="text-[10px] font-bold text-gray-500 uppercase">Color pool</span>
+                                                        <div className="flex gap-1">
+                                                            {colors.map(c => <span key={c} className="w-4 h-4 rounded-full border border-white/20" style={{backgroundColor: c}} />)}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="text-[10px] font-bold text-gray-500 uppercase">Size pool</span>
+                                                        <div className="flex gap-1">
+                                                            {sizes.map(s => <span key={s} className="text-[10px] bg-gray-700 rounded px-1.5 py-0.5 text-gray-200 font-bold uppercase">{s}</span>)}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                 )}
                                 {selectedItem.type === 'belt' && !teachMinimized && (
                                     <div className="flex flex-col gap-3 w-full">
                                         <RangeSlider label="BELT SPEED" min={0.5} max={5} step={0.5} value={selectedItem.config?.speed || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
-                                        <div className="grid grid-cols-3 gap-3">
-                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
-                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
-                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
-                                        </div>
-                                        <div className="grid grid-cols-3 gap-3">
-                                            <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.beltSize?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [Math.max(0.5, snapValue(v, snapStep)), selectedItem.config?.beltSize?.[1] || 2] } })} />
-                                            <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.beltSize?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [selectedItem.config?.beltSize?.[0] || 2, Math.max(0.5, snapValue(v, snapStep))] } })} />
-                                            <RangeSlider label="HEIGHT" min={0.25} max={1.5} step={heightStep} value={selectedItem.config?.beltHeight || 0.538} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltHeight: snapValue(v, heightStep) } })} />
-                                        </div>
                                         <div className="grid grid-cols-2 gap-2">
                                             <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
                                                 <span className="text-[10px] font-bold text-gray-500">LEFT RAIL</span>
@@ -641,17 +708,7 @@ export const UI: React.FC = () => {
                                 )}
                                 {selectedItem.type === 'table' && !teachMinimized && (
                                     <div className="flex flex-col gap-3 w-full">
-                                        <div className="grid grid-cols-3 gap-3">
-                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
-                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
-                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
-                                        </div>
-                                        <div className="grid grid-cols-3 gap-3 mt-2">
-                                            <RangeSlider label="WIDTH" min={0.5} max={3.5} step={snapStep} value={selectedItem.config?.tableSize?.[0] || 1.8} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [Math.max(0.5, snapValue(v, snapStep)), selectedItem.config?.tableSize?.[1] || 1.8] } })} />
-                                            <RangeSlider label="DEPTH" min={0.5} max={3.5} step={snapStep} value={selectedItem.config?.tableSize?.[1] || 1.8} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [selectedItem.config?.tableSize?.[0] || 1.8, Math.max(0.5, snapValue(v, snapStep))] } })} />
-                                            <RangeSlider label="HEIGHT" min={0.25} max={1.2} step={heightStep} value={selectedItem.config?.tableHeight || 0.45} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableHeight: snapValue(v, heightStep) } })} />
-                                        </div>
-                                        <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end mt-2">
+                                        <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end">
                                             <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
                                             <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
                                             <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-7">
@@ -691,11 +748,6 @@ export const UI: React.FC = () => {
                                                             </button>
                                                             {showTransforms && (
                                                                 <div className="px-2 pb-2 pt-2 flex flex-col gap-1.5">
-                                                                    <div className="grid grid-cols-3 gap-3">
-                                                                        <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
-                                                                        <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
-                                                                        <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
-                                                                    </div>
                                                                     <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
 
                                                                     <div className="flex gap-2 w-full mt-1">
@@ -1022,7 +1074,13 @@ export const UI: React.FC = () => {
 
                             {/* Global Actions */}
                             <div className="flex flex-col gap-1.5 min-w-[112px]">
-                                <div className="grid grid-cols-2 gap-1.5">
+                                <div className="grid grid-cols-3 gap-1.5">
+                                    <button 
+                                        onClick={() => setMoveModeItemId(moveModeItemId === selectedItem.id ? null : selectedItem.id)}
+                                        className={`flex items-center justify-center gap-1 px-2 h-9 rounded-lg text-[10px] font-bold transition-colors ${moveModeItemId === selectedItem.id ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]' : 'bg-blue-500/20 hover:bg-blue-500/40 text-blue-400'}`}
+                                    >
+                                        <Move size={13} /> {moveModeItemId === selectedItem.id ? 'MOVING...' : 'MOVE'}
+                                    </button>
                                     <button 
                                         onClick={handleRotateSelected}
                                         className="flex items-center justify-center gap-1 px-2 h-9 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-[10px] font-bold transition-colors"
@@ -1071,30 +1129,44 @@ export const UI: React.FC = () => {
                     /* BUILD MENU */
                     <>
                         {/* Hints */}
-                        {buildMode ? (
+                        {buildMode && !draftPlacement ? (
                             <div className="bg-blue-500 text-white px-6 py-2 rounded-full text-sm font-bold shadow-lg flex items-center gap-2 animate-bounce">
                                 <span>Click grid to place</span>
                                 <span className="bg-blue-600 px-2 py-0.5 rounded text-xs">Press 'R' to rotate</span>
                             </div>
                         ) : null}
 
-                        <div className="bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-700 p-2 flex gap-3 overflow-visible items-center">
+                        <div className="bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-700 p-2 flex flex-wrap justify-center gap-2 sm:gap-3 items-center max-w-[calc(100vw-16px)]">
                             
                             <div className="flex items-center gap-2 mr-2">
                                 <button 
                                     onClick={handlePlayClick}
                                     className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning && !isPaused ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
-                                    title={!isRunning ? "Play (Click 5 times for +10k credits)" : isPaused ? "Resume" : "Pause"}
+                                    title={!isRunning ? "Play (Click 5× for +10k credits)" : isPaused ? "Resume" : "Pause"}
                                 >
                                     {isRunning && !isPaused ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
                                 </button>
-                                <button 
-                                    onClick={handleStopClick}
-                                    className={`flex items-center justify-center p-3 rounded-xl transition-all bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white`}
-                                    title="Stop & Reset (asks confirmation)"
-                                >
-                                    <Square size={20} fill="currentColor" />
-                                </button>
+
+                                {/* Stop button */}
+                                <div className="relative">
+                                    <button 
+                                        onClick={handleStopClick}
+                                        className={`flex items-center justify-center p-3 rounded-xl transition-all ${showStopConfirm ? 'bg-red-500 text-white' : 'bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white'}`}
+                                        title="Stop & Reset Items"
+                                        id="stop-btn"
+                                    >
+                                        <Square size={20} fill="currentColor" />
+                                    </button>
+                                    {showStopConfirm && (
+                                        <div className="absolute bg-gray-950 border border-red-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-52 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)'}}>
+                                            <p className="text-xs text-red-200 font-bold text-center">⚠ Reset simulation & clear all parts?</p>
+                                            <div className="flex gap-2">
+                                                <button onClick={doStop} className="flex-1 bg-red-500 hover:bg-red-400 text-white text-xs font-bold rounded-lg py-1.5 transition-colors">RESET</button>
+                                                <button onClick={() => setShowStopConfirm(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold rounded-lg py-1.5 transition-colors">CANCEL</button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
 
                                 <div className="flex flex-col gap-1 ml-1">
                                     <input 
@@ -1118,7 +1190,7 @@ export const UI: React.FC = () => {
                             <div className="w-px h-8 bg-gray-700"></div>
 
                             {/* BUILD GROUPS */}
-                            <div className="flex gap-2 relative">
+                            <div className="flex gap-2 flex-wrap justify-center">
                                 {[
                                     { id: 'surfaces', icon: <Square size={18} />, label: 'Surfaces', items: ['belt', 'table', 'pile'] as ItemType[] },
                                     { id: 'machines', icon: <Cpu size={18} />, label: 'Machines', items: ['sender', 'receiver', 'indexed_receiver'] as ItemType[] },
@@ -1139,11 +1211,11 @@ export const UI: React.FC = () => {
                                             </button>
                                             
                                             {isGroupActive && (
-                                                <div className="absolute bottom-full left-0 mb-2 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-2 flex flex-col gap-1 w-48 animate-fade-in origin-bottom">
+                                                <div className="absolute bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-2 flex flex-col gap-1 w-52 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)'}}>
                                                     {group.items.map(type => (
                                                         <BuildButton 
                                                             key={type}
-                                                            title={type.replace('_', ' ').toUpperCase()} 
+                                                            title={type === 'sender' ? 'PART SPAWNER' : type.replace('_', ' ').toUpperCase()} 
                                                             cost={ITEM_COSTS[type]} 
                                                             isActive={buildMode === type}
                                                             onClick={() => {
@@ -1177,7 +1249,7 @@ export const UI: React.FC = () => {
                                 </button>
                             </div>
 
-                            <div className="grid grid-cols-[260px_1fr] min-h-0 flex-1">
+                            <div className="grid grid-cols-1 sm:grid-cols-[220px_1fr] min-h-0 flex-1 overflow-hidden">
                                 <div className="border-r border-slate-800 p-3 flex flex-col gap-2 min-h-0">
                                     <div className="grid grid-cols-3 gap-1">
                                         <button onClick={createTemplate} className="rounded border border-emerald-500/40 bg-emerald-500/15 text-emerald-200 text-[11px] font-bold py-1 hover:bg-emerald-500/25">NEW</button>
@@ -1192,107 +1264,188 @@ export const UI: React.FC = () => {
                                                 <button
                                                     key={tpl.id}
                                                     onClick={() => setActiveTemplateId(tpl.id)}
-                                                    className={`text-left rounded border px-2 py-1.5 transition-colors ${active ? 'border-cyan-500 bg-cyan-500/15' : 'border-slate-800 bg-slate-900 hover:bg-slate-800'}`}
+                                                    className={`text-left rounded border px-2 py-1.5 transition-colors flex items-center gap-2 ${active ? 'border-cyan-500 bg-cyan-500/15' : 'border-slate-800 bg-slate-900 hover:bg-slate-800'}`}
                                                 >
-                                                    <div className="text-xs font-bold truncate">{tpl.name}</div>
-                                                    <div className="text-[10px] text-slate-400 uppercase">{tpl.shape} · {tpl.size}</div>
+                                                    <span className="w-3 h-3 rounded-full shrink-0 border border-white/20" style={{ backgroundColor: tpl.color }} />
+                                                    <div className="min-w-0">
+                                                        <div className="text-xs font-bold truncate">{tpl.name}</div>
+                                                        <div className="text-[10px] text-slate-400 uppercase">{tpl.shape} · {tpl.size}</div>
+                                                    </div>
                                                 </button>
                                             );
                                         })}
                                     </div>
                                 </div>
 
-                                <div className="p-4 overflow-y-auto">
+                                <div className="p-4 overflow-y-auto flex flex-col gap-4">
                                     {activeTemplate ? (
-                                        <div className="flex flex-col gap-4">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Name</span>
-                                                <input
-                                                    value={activeTemplate.name}
-                                                    onChange={(e) => patchActiveTemplate({ name: e.target.value })}
-                                                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm outline-none focus:border-cyan-500"
-                                                />
-                                            </label>
-
-                                            <div className="flex flex-col gap-1">
-                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Shape</span>
-                                                <div className="grid grid-cols-4 gap-2">
-                                                    {PART_SHAPES.map(shape => (
-                                                        <button
-                                                            key={shape}
-                                                            onClick={() => patchActiveTemplate({ shape })}
-                                                            className={`rounded border px-2 py-1.5 text-[11px] font-bold uppercase ${activeTemplate.shape === shape ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
-                                                        >
-                                                            {shape}
-                                                        </button>
-                                                    ))}
+                                        <>
+                                            {/* ─── Row: 3-D preview + name/shape ─── */}
+                                            <div className="flex gap-4 items-start">
+                                                <div className="shrink-0 rounded-xl overflow-hidden border border-slate-700 bg-[#0d1017]">
+                                                    <PartPreview3D template={activeTemplate} width={160} height={130} />
                                                 </div>
-                                            </div>
-
-                                            <div className="flex flex-col gap-1">
-                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Default Color</span>
-                                                <div className="grid grid-cols-6 gap-2">
-                                                    {PART_COLORS.map(c => (
-                                                        <button
-                                                            key={c.value}
-                                                            onClick={() => patchActiveTemplate({ color: c.value })}
-                                                            title={c.label}
-                                                            className={`h-8 rounded border ${activeTemplate.color === c.value ? 'border-white' : 'border-slate-700'}`}
-                                                            style={{ backgroundColor: c.value }}
-                                                        />
-                                                    ))}
-                                                </div>
-                                                <div className="flex items-center gap-2 mt-1">
-                                                    <input
-                                                        type="color"
-                                                        value={activeTemplate.color}
-                                                        onChange={(e) => patchActiveTemplate({ color: e.target.value })}
-                                                        className="h-8 w-10 rounded border border-slate-700 bg-slate-900 p-0.5"
-                                                    />
-                                                    <input
-                                                        value={activeTemplate.color}
-                                                        onChange={(e) => patchActiveTemplate({ color: e.target.value })}
-                                                        className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono w-28 outline-none focus:border-cyan-500"
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-col gap-1">
-                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Default Size</span>
-                                                <div className="grid grid-cols-3 gap-2">
-                                                    {PICK_SIZES.map(size => (
-                                                        <button
-                                                            key={size}
-                                                            onClick={() => patchActiveTemplate({ size })}
-                                                            className={`rounded border px-2 py-1.5 text-[11px] font-bold uppercase ${activeTemplate.size === size ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
-                                                        >
-                                                            {size}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
-
-                                            {activeTemplate.shape === 'disc' && (
-                                                <div className="grid grid-cols-2 gap-2">
-                                                    <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-900 px-3 py-1.5">
-                                                        <span className="text-[11px] font-bold text-slate-300 uppercase">Center Hole</span>
+                                                <div className="flex flex-col gap-3 flex-1 min-w-0">
+                                                    <label className="flex flex-col gap-1">
+                                                        <span className="text-[11px] font-bold text-slate-400 uppercase">Name</span>
                                                         <input
-                                                            type="checkbox"
-                                                            checked={activeTemplate.hasCenterHole !== false}
-                                                            onChange={(e) => patchActiveTemplate({ hasCenterHole: e.target.checked })}
+                                                            value={activeTemplate.name}
+                                                            onChange={(e) => patchActiveTemplate({ name: e.target.value })}
+                                                            className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm outline-none focus:border-cyan-500"
                                                         />
                                                     </label>
-                                                    <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-900 px-3 py-1.5">
-                                                        <span className="text-[11px] font-bold text-slate-300 uppercase">Index Hole</span>
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={activeTemplate.hasIndexHole !== false}
-                                                            onChange={(e) => patchActiveTemplate({ hasIndexHole: e.target.checked })}
-                                                        />
+                                                    <div className="flex flex-col gap-1">
+                                                        <span className="text-[11px] font-bold text-slate-400 uppercase">Shape</span>
+                                                        <div className="grid grid-cols-2 gap-1.5">
+                                                            {PART_SHAPES.map(shape => (
+                                                                <button
+                                                                    key={shape}
+                                                                    onClick={() => patchActiveTemplate({ shape })}
+                                                                    className={`rounded border px-2 py-1 text-[11px] font-bold uppercase ${activeTemplate.shape === shape ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
+                                                                >
+                                                                    {shape}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* ─── Default / spawn colors ─── */}
+                                            <div className="flex flex-col gap-1.5">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Spawn Colors <span className="text-slate-600 normal-case font-normal">(check multiple for random)</span></span>
+                                                <div className="grid grid-cols-6 gap-1.5">
+                                                    {PART_COLORS.map(c => {
+                                                        const inMulti = (activeTemplate.spawnColors ?? []).includes(c.value);
+                                                        const isDefault = activeTemplate.color === c.value;
+                                                        return (
+                                                            <button
+                                                                key={c.value}
+                                                                title={c.label}
+                                                                onClick={() => {
+                                                                    // Left-click = set as default color
+                                                                    patchActiveTemplate({ color: c.value });
+                                                                }}
+                                                                onContextMenu={(e) => {
+                                                                    // Right-click = toggle in spawnColors list
+                                                                    e.preventDefault();
+                                                                    const cur = activeTemplate.spawnColors ?? [];
+                                                                    const next = inMulti ? cur.filter(x => x !== c.value) : [...cur, c.value];
+                                                                    patchActiveTemplate({ spawnColors: next });
+                                                                }}
+                                                                className={`h-9 rounded-lg border-2 relative transition-all ${isDefault ? 'border-white scale-110' : inMulti ? 'border-cyan-400' : 'border-slate-700 hover:border-slate-400'}`}
+                                                                style={{ backgroundColor: c.value }}
+                                                            >
+                                                                {inMulti && <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-cyan-400 border border-slate-900" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <input type="color" value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="h-7 w-9 rounded border border-slate-700 bg-slate-900 p-0.5 cursor-pointer" />
+                                                    <input value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono w-24 outline-none focus:border-cyan-500" />
+                                                    <span className="text-[10px] text-slate-500">Click=default · Right-click=add to random pool</span>
+                                                </div>
+                                            </div>
+
+                                            {/* ─── Spawn sizes (multi) ─── */}
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Spawn Sizes <span className="text-slate-600 normal-case font-normal">(check multiple for random)</span></span>
+                                                <div className="flex gap-2">
+                                                    {PICK_SIZES.map(size => {
+                                                        const isDefault = activeTemplate.size === size;
+                                                        const inMulti = (activeTemplate.spawnSizes ?? []).includes(size);
+                                                        return (
+                                                            <button
+                                                                key={size}
+                                                                onClick={() => patchActiveTemplate({ size })}
+                                                                onContextMenu={(e) => {
+                                                                    e.preventDefault();
+                                                                    const cur = activeTemplate.spawnSizes ?? [];
+                                                                    patchActiveTemplate({ spawnSizes: inMulti ? cur.filter(x => x !== size) : [...cur, size] });
+                                                                }}
+                                                                className={`flex-1 rounded border px-2 py-1.5 text-[11px] font-bold uppercase relative ${isDefault ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : inMulti ? 'border-cyan-700 bg-cyan-900/20 text-cyan-300' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
+                                                            >
+                                                                {size}
+                                                                {inMulti && <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                                <p className="text-[10px] text-slate-500">Click=default · Right-click=add to random pool</p>
+                                            </div>
+
+                                            {/* ─── Fine-tune sliders ─── */}
+                                            <div className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5">
+                                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fine-Tune Geometry</span>
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    <label className="flex flex-col gap-1">
+                                                        <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                            <span>RADIUS SCALE</span>
+                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.radiusScale ?? 1).toFixed(2)}×</span>
+                                                        </div>
+                                                        <input type="range" min="0.2" max="10" step="0.05" value={activeTemplate.radiusScale ?? 1} onChange={e => patchActiveTemplate({ radiusScale: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
+                                                    </label>
+                                                    <label className="flex flex-col gap-1">
+                                                        <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                            <span>HEIGHT SCALE</span>
+                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.heightScale ?? 1).toFixed(2)}×</span>
+                                                        </div>
+                                                        <input type="range" min="0.1" max="10" step="0.05" value={activeTemplate.heightScale ?? 1} onChange={e => patchActiveTemplate({ heightScale: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
                                                     </label>
                                                 </div>
-                                            )}
-                                        </div>
+
+                                                {activeTemplate.shape === 'disc' && (
+                                                    <>
+                                                        <div className="grid grid-cols-2 gap-3 mt-1">
+                                                            <label className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                                    <span>RING HOLES</span>
+                                                                    <span className="text-cyan-400 font-mono">{activeTemplate.numHoles ?? 0}</span>
+                                                                </div>
+                                                                <input type="range" min="0" max="8" step="1" value={activeTemplate.numHoles ?? 0} onChange={e => patchActiveTemplate({ numHoles: parseInt(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
+                                                            </label>
+                                                            <label className="flex flex-col gap-1">
+                                                                <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                                    <span>HOLE SIZE</span>
+                                                                    <span className="text-cyan-400 font-mono">{(activeTemplate.holeDiameter ?? 0.1).toFixed(2)}</span>
+                                                                </div>
+                                                                <input type="range" min="0.04" max="0.35" step="0.01" value={activeTemplate.holeDiameter ?? 0.1} onChange={e => patchActiveTemplate({ holeDiameter: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
+                                                            </label>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-2 mt-1">
+                                                            <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-950 px-3 py-1.5">
+                                                                <span className="text-[11px] font-bold text-slate-300 uppercase">Center Hole</span>
+                                                                <input type="checkbox" checked={activeTemplate.hasCenterHole !== false} onChange={(e) => patchActiveTemplate({ hasCenterHole: e.target.checked })} className="accent-cyan-500" />
+                                                            </label>
+                                                            <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-950 px-3 py-1.5">
+                                                                <span className="text-[11px] font-bold text-slate-300 uppercase">Index Hole</span>
+                                                                <input type="checkbox" checked={activeTemplate.hasIndexHole !== false} onChange={(e) => patchActiveTemplate({ hasIndexHole: e.target.checked })} className="accent-cyan-500" />
+                                                            </label>
+                                                        </div>
+                                                    </>
+                                                )}
+
+                                                {activeTemplate.shape === 'box' && (
+                                                    <div className="grid grid-cols-2 gap-3 mt-1">
+                                                        <label className="flex flex-col gap-1">
+                                                            <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                                <span>BOX WIDTH</span>
+                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleX ?? 1).toFixed(2)}×</span>
+                                                            </div>
+                                                            <input type="range" min="0.3" max="2.5" step="0.05" value={activeTemplate.scaleX ?? 1} onChange={e => patchActiveTemplate({ scaleX: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
+                                                        </label>
+                                                        <label className="flex flex-col gap-1">
+                                                            <div className="flex justify-between text-[10px] font-bold text-slate-500">
+                                                                <span>BOX DEPTH</span>
+                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleZ ?? 1).toFixed(2)}×</span>
+                                                            </div>
+                                                            <input type="range" min="0.3" max="2.5" step="0.05" value={activeTemplate.scaleZ ?? 1} onChange={e => patchActiveTemplate({ scaleZ: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
+                                                        </label>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </>
                                     ) : (
                                         <div className="text-sm text-slate-400">No template selected.</div>
                                     )}

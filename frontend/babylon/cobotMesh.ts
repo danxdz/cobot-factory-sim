@@ -34,12 +34,12 @@ const COBOT_PEDESTAL_HEIGHT = 0.52;
 const COBOT_BASE_PIVOT_Y = COBOT_PEDESTAL_HEIGHT;
 const COBOT_MOUNT_REACH_OFFSET = COBOT_BASE_PIVOT_Y + 0.05;
 const IK_BASE_CLEARANCE_RADIUS = 0.42;
-const IK_SHOULDER_MIN = -1.15;
-const IK_SHOULDER_MAX = 1.28;
-const IK_ELBOW_MIN = 0.08;
-const IK_ELBOW_MAX = 2.38;
-const IK_WRIST_MIN = -1.35;
-const IK_WRIST_MAX = 1.35;
+const IK_SHOULDER_MIN = -1.6;
+const IK_SHOULDER_MAX = 1.4;
+const IK_ELBOW_MIN = -0.2;
+const IK_ELBOW_MAX = 2.8;
+const IK_WRIST_MIN = -2.8;
+const IK_WRIST_MAX = 2.8;
 
 function partRadiusForSize(size: PartSize): number {
     if (size === 'small') return 0.22;
@@ -91,26 +91,26 @@ function topOfPileAt(x: number, z: number, baseY: number, ignoreItem?: SimItem |
     }, baseY);
 }
 
-function itemFootprintHit(item: PlacedItem, x: number, z: number, pad = 0): boolean {
+function itemFootprintHit(item: PlacedItem, x: number, z: number, pad = 0.0): boolean {
     const dx = Math.abs(x - item.position[0]);
     const dz = Math.abs(z - item.position[2]);
     if (item.type === 'camera') return false;
     if (item.type === 'table') {
         const [w, d] = item.config?.tableSize || [1.8, 1.8];
-        return dx <= w / 2 + pad && dz <= d / 2 + pad;
+        return dx <= w / 2 && dz <= d / 2;
     }
     if (item.type === 'belt') {
         const [w, d] = item.config?.beltSize || [2, 2];
-        return dx <= w / 2 + pad && dz <= d / 2 + pad;
+        return dx <= w / 2 && dz <= d / 2;
     }
     if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) {
         const [w, d] = item.config?.machineSize || [2, 2];
-        return dx <= w / 2 + pad && dz <= d / 2 + pad;
+        return dx <= w / 2 && dz <= d / 2;
     }
     if (item.type === 'cobot') {
-        return dx <= COBOT_PLATFORM_W / 2 + pad && dz <= COBOT_PLATFORM_D / 2 + pad;
+        return dx <= COBOT_PLATFORM_W / 2 && dz <= COBOT_PLATFORM_D / 2;
     }
-    return dx <= 1 + pad && dz <= 1 + pad;
+    return dx <= 1 && dz <= 1;
 }
 
 function machineTopY(item: PlacedItem): number {
@@ -666,6 +666,7 @@ export interface CobotState {
     stackSlots: StackSlot[];         // top-platform grid positions
     isFull: boolean;
     sensorLights: import("@babylonjs/core").Mesh[];
+    lastDroppedItemId?: string;      // skip re-targeting this after auto-drop
 }
 
 export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { node: TransformNode; state?: CobotState } {
@@ -1383,6 +1384,10 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     state.phase = state.grabbedItem ? 'idle' : 'next';
                     break;
                 }
+                if (supportTopAt(tgt.x, tgt.z, dropObstacles(state)) <= DISC_H / 2 + 0.01) {
+                    state.safetyStopped = true;
+                    break;
+                }
                 const travelY = carryTravelY(state, tgt);
                 state.desiredTarget.set(tgt.x, travelY, tgt.z);
                 if (reached) {
@@ -1422,7 +1427,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 state.gripperOpen = true;
                 state.waitTimer += delta;
                 if (state.waitTimer > 0.12) {
-                    if (state.grabbedItem) { state.grabbedItem.state = 'free'; state.grabbedItem = null; }
+                    if (state.grabbedItem) {
+                        if (state.isAutoProgram) state.lastDroppedItemId = state.grabbedItem.id;
+                        state.grabbedItem.state = 'free';
+                        state.grabbedItem = null;
+                    }
                     state.autoDropTarget = null;
                 state.phase = 'next';
                 }
@@ -1434,6 +1443,13 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     state.isAutoProgram = false;
                     state.stepIndex = 0;
                     state.blockedTimer = 0;
+                    // After auto-program finishes, force a cooldown before re-scanning so the
+                    // just-dropped item settles and isn't immediately re-targeted.
+                    state.targetTimer = -2.5; // need to accumulate back to 1.0 before next scan
+                    if (state.lastDroppedItemId) {
+                        state.skippedTargetIds[state.lastDroppedItemId] = state.simTime + 3.0;
+                        state.lastDroppedItemId = undefined;
+                    }
                 }
                 state.phase = 'idle'; 
                 break;
@@ -1441,9 +1457,10 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     } else {
         state.targetTimer += delta;
         // No program — check for idle auto-organize
-        if (state.autoOrganize && state.phase === 'idle' && state.targetTimer > 1.0) {
+        if (state.autoOrganize && state.phase === 'idle' && state.targetTimer > 1.5) {
             const org = findItemToOrganize(state);
             if (org) {
+                state.lastDroppedItemId = undefined; // clear before starting new task
                 state.program = [
                     { action: 'pick', pos: [org.item.pos.x, org.item.pos.y, org.item.pos.z] },
                     { action: 'drop', pos: org.dropPos, sortColor: org.sortColor, sortSize: org.sortSize }
@@ -1453,7 +1470,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 state.targetTimer = 0;
             } else {
                 state.desiredTarget.copyFrom(state.idleTarget);
-                state.targetTimer = 0; // Poll periodically, don't spin every frame.
+                state.targetTimer = -1.0; // 2.5s total between polls when no work found
                 state.blockedTimer += delta;
             }
         } else {

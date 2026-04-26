@@ -4,7 +4,7 @@ import {
     HemisphericLight, DirectionalLight, ShadowGenerator,
     MeshBuilder, PBRMaterial, TransformNode, Mesh,
     PointerEventTypes, PhysicsAggregate, PhysicsShapeType,
-    HavokPlugin, AbstractMesh, StandardMaterial
+    HavokPlugin, AbstractMesh, StandardMaterial, GizmoManager
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import { factoryStore } from '../store';
@@ -58,8 +58,17 @@ function partMeshKeyFor(item: {
     shape?: string;
     hasCenterHole?: boolean;
     hasIndexHole?: boolean;
+    radiusScale?: number;
+    heightScale?: number;
+    scaleX?: number;
+    scaleZ?: number;
 }) {
-    return `${item.shape || 'disc'}_${item.hasCenterHole !== false ? 1 : 0}_${item.hasIndexHole !== false ? 1 : 0}`;
+    // Include geometry in key so pool slot rebuilds when template shape changes
+    const rs = (item.radiusScale ?? 1).toFixed(2);
+    const hs = (item.heightScale ?? 1).toFixed(2);
+    const sx = (item.scaleX ?? 1).toFixed(2);
+    const sz = (item.scaleZ ?? 1).toFixed(2);
+    return `${item.shape || 'disc'}_${item.hasCenterHole !== false ? 1 : 0}_${item.hasIndexHole !== false ? 1 : 0}_rs${rs}_hs${hs}_sx${sx}_sz${sz}`;
 }
 
 function cobotMountLocal(config?: PlacedItem['config']) {
@@ -118,6 +127,71 @@ export const BabylonScene: React.FC = () => {
 
         const shadows = new ShadowGenerator(1024, sun);
         shadows.usePoissonSampling = true;
+
+        // ── GIZMOS ──────────────────────────────────────────────────────────
+        const gizmoManager = new GizmoManager(scene);
+        gizmoManager.positionGizmoEnabled = false;
+        gizmoManager.rotationGizmoEnabled = false;
+        gizmoManager.scaleGizmoEnabled = false;
+        gizmoManager.boundingBoxGizmoEnabled = false;
+        gizmoManager.clearGizmoOnEmptyPointerEvent = false;
+
+        if (gizmoManager.gizmos.positionGizmo) {
+            // Keep X and Z dragging, disable Y
+            gizmoManager.gizmos.positionGizmo.yGizmo.isEnabled = false;
+            
+            // Smaller, modern gizmo look
+            gizmoManager.gizmos.positionGizmo.scaleRatio = 1.0;
+
+            const createModernArrow = (hexColor: string) => {
+                const mat = new StandardMaterial("modernGizmoMat", scene);
+                mat.emissiveColor = Color3.FromHexString(hexColor);
+                mat.disableLighting = true;
+                mat.alpha = 0.9;
+                
+                // Cone only, centered but offset outward
+                const cone = MeshBuilder.CreateCylinder("cone", { diameterTop: 0, diameterBottom: 0.4, height: 0.8, tessellation: 32 }, scene);
+                cone.material = mat;
+                cone.position.y = 0.5; // Offset slightly from center
+                return cone;
+            };
+
+            gizmoManager.gizmos.positionGizmo.xGizmo.setCustomMesh(createModernArrow('#ef4444')); // Red for X
+            gizmoManager.gizmos.positionGizmo.zGizmo.setCustomMesh(createModernArrow('#3b82f6')); // Blue for Z
+
+            // Update React state when drag ends
+            gizmoManager.gizmos.positionGizmo.onDragEndObservable.add(() => {
+                const st = factoryStore.getState();
+                if (st.moveModeItemId && gizmoManager.attachedNode) {
+                    const pos = gizmoManager.attachedNode.position;
+                    const itemToMove = st.placedItems.find(i => i.id === st.moveModeItemId);
+                    if (itemToMove) {
+                        const snapStep = itemToMove.type === 'camera' ? 0.5 : 2;
+                        const gx = Math.round(pos.x / snapStep) * snapStep;
+                        const gz = Math.round(pos.z / snapStep) * snapStep;
+                        
+                        let gy = itemToMove.position[1];
+                        if (itemToMove.type === 'camera') {
+                            const topY = getSupportSurfaceY(gx, gz, st.placedItems);
+                            gy = topY === DISC_HALF_H ? 0 : topY;
+                        }
+
+                        const occupied = itemToMove.type !== 'camera' && st.placedItems.some(i =>
+                            i.id !== itemToMove.id && Math.abs(i.position[0] - gx) < 0.1 && Math.abs(i.position[2] - gz) < 0.1
+                        );
+
+                        if (!occupied) {
+                            st.updatePlacedItem(st.moveModeItemId, {
+                                position: [gx, gy, gz]
+                            });
+                        } else {
+                            // If snapped position is occupied, snap back to original valid position
+                            gizmoManager.attachedNode.position.set(itemToMove.position[0], itemToMove.position[1], itemToMove.position[2]);
+                        }
+                    }
+                }
+            });
+        }
 
         // ── GROUND ──────────────────────────────────────────────────────────
         const floorMat = new PBRMaterial('floor', scene);
@@ -264,14 +338,14 @@ export const BabylonScene: React.FC = () => {
                     : '';
                 const sig = `${item.position.join(',')}_${item.rotation}_${visualConfigSig}`;
                 if (!entityNodes.has(item.id)) {
-                    const node = buildEntityMesh(item);
+                    const node = buildEntityMesh(item, item.id === 'draft_item');
                     if (node) { entityNodes.set(item.id, node); entitySigs.set(item.id, sig); }
                 } else if (entitySigs.get(item.id) !== sig) {
                     // Position or rotation changed — dispose and rebuild
                     disposeNode(entityNodes.get(item.id)!);
                     entityNodes.delete(item.id);
                     cobotStates.delete(item.id);
-                    const node = buildEntityMesh(item);
+                    const node = buildEntityMesh(item, item.id === 'draft_item');
                     if (node) { entityNodes.set(item.id, node); entitySigs.set(item.id, sig); }
                 }
             }
@@ -493,15 +567,23 @@ export const BabylonScene: React.FC = () => {
                     m => m.name === 'floorVisual');
                 if (!pick?.hit || !pick.pickedPoint) { cursorMesh.isVisible = false; return; }
 
-                const gx = Math.round(pick.pickedPoint.x / 2) * 2;
-                const gz = Math.round(pick.pickedPoint.z / 2) * 2;
+                const snapStep = (st.buildMode === 'camera' || (st.moveModeItemId && st.placedItems.find(i => i.id === st.moveModeItemId)?.type === 'camera')) ? 0.5 : 2;
+                const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
+                const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
 
                 if (st.buildMode) {
+                    let gy = 0;
+                    if (st.buildMode === 'camera') {
+                        const topY = getSupportSurfaceY(gx, gz, st.placedItems);
+                        gy = topY === DISC_HALF_H ? 0 : topY;
+                    }
+
                     cursorMesh.isVisible = true;
                     cursorMesh.position.x = gx;
+                    cursorMesh.position.y = gy + 0.01;
                     cursorMesh.position.z = gz;
 
-                    const occupied = st.placedItems.some(i =>
+                    const occupied = st.buildMode !== 'camera' && st.placedItems.some(i =>
                         Math.abs(i.position[0] - gx) < 0.1 && Math.abs(i.position[2] - gz) < 0.1
                     );
                     cursorMesh.material = occupied ? cursorMatBad : cursorMatOk;
@@ -509,7 +591,7 @@ export const BabylonScene: React.FC = () => {
                     if (ghostNode) { disposeNode(ghostNode); ghostNode = null; }
                     const ghostItem: PlacedItem = {
                         id: '_ghost', type: st.buildMode,
-                        position: [gx, 0, gz], rotation: st.buildRotation,
+                        position: [gx, gy, gz], rotation: st.buildRotation,
                         config: st.buildConfig as any,
                     };
                     ghostNode = buildEntityMesh(ghostItem, true);
@@ -588,21 +670,58 @@ export const BabylonScene: React.FC = () => {
                     const pick = scene.pick(scene.pointerX, scene.pointerY,
                         m => m.name === 'floorVisual');
                     if (!pick?.hit || !pick.pickedPoint) return;
-                    const gx = Math.round(pick.pickedPoint.x / 2) * 2;
-                    const gz = Math.round(pick.pickedPoint.z / 2) * 2;
+                    const snapStep = st2.buildMode === 'camera' ? 0.5 : 2;
+                    const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
+                    const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
+                    
+                    let gy = 0;
+                    if (st2.buildMode === 'camera') {
+                        const topY = getSupportSurfaceY(gx, gz, st2.placedItems);
+                        gy = topY === DISC_HALF_H ? 0 : topY;
+                    }
+                    
                     // Cameras are pole-mounted — they can share a tile with other entities
                     const occupied = st2.buildMode !== 'camera' && st2.placedItems.some(i =>
                         Math.abs(i.position[0] - gx) < 0.1 && Math.abs(i.position[2] - gz) < 0.1
                     );
                     if (!occupied) {
-                        st2.addPlacedItem({
-                            type: st2.buildMode,
-                            position: [gx, 0, gz],
-                            rotation: st2.buildRotation,
-                            config: st2.buildMode === 'cobot'
-                                ? { ...st2.buildConfig, program: [] }
-                                : st2.buildConfig,
-                        });
+                        if (!st2.draftPlacement) {
+                            st2.setDraftPlacement({
+                                id: 'draft_item',
+                                type: st2.buildMode,
+                                position: [gx, gy, gz],
+                                rotation: st2.buildRotation,
+                                config: st2.buildMode === 'cobot'
+                                    ? { ...st2.buildConfig, program: [] }
+                                    : st2.buildConfig,
+                            });
+                        }
+                    }
+                    return;
+                }
+
+                if (st2.moveModeItemId) {
+                    const pick = scene.pick(scene.pointerX, scene.pointerY, m => m.name === 'floorVisual');
+                    if (pick?.hit && pick.pickedPoint) {
+                        const itemToMove = st2.placedItems.find(i => i.id === st2.moveModeItemId);
+                        if (itemToMove) {
+                            const snapStep = itemToMove.type === 'camera' ? 0.5 : 2;
+                            const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
+                            const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
+                            
+                            let gy = itemToMove.position[1];
+                            if (itemToMove.type === 'camera') {
+                                const topY = getSupportSurfaceY(gx, gz, st2.placedItems);
+                                gy = topY === DISC_HALF_H ? 0 : topY;
+                            }
+
+                            const occupied = itemToMove.type !== 'camera' && st2.placedItems.some(i =>
+                                i.id !== itemToMove.id && Math.abs(i.position[0] - gx) < 0.1 && Math.abs(i.position[2] - gz) < 0.1
+                            );
+                            if (!occupied) {
+                                st2.updatePlacedItem(itemToMove.id, { position: [gx, gy, gz] });
+                            }
+                        }
                     }
                     return;
                 }
@@ -657,20 +776,20 @@ export const BabylonScene: React.FC = () => {
             const dz = Math.abs(z - item.position[2]);
             if (item.type === 'table') {
                 const [w, d] = item.config?.tableSize || [1.8, 1.8];
-                return dx <= w / 2 + radius * 0.6 && dz <= d / 2 + radius * 0.6;
+                return dx <= w / 2 && dz <= d / 2;
             }
             if (item.type === 'belt') {
                 const [w, d] = item.config?.beltSize || [2, 2];
-                return dx <= w / 2 + radius * 0.6 && dz <= d / 2 + radius * 0.6;
+                return dx <= w / 2 && dz <= d / 2;
             }
             if (['sender','receiver','indexed_receiver','pile'].includes(item.type)) {
                 const [w, d] = item.config?.machineSize || [2, 2];
-                return dx <= w / 2 + radius * 0.6 && dz <= d / 2 + radius * 0.6;
+                return dx <= w / 2 && dz <= d / 2;
             }
             if (item.type === 'cobot') {
-                return dx <= COBOT_PLATFORM_HALF_W + radius * 0.6 && dz <= COBOT_PLATFORM_HALF_D + radius * 0.6;
+                return dx <= COBOT_PLATFORM_HALF_W && dz <= COBOT_PLATFORM_HALF_D;
             }
-            return dx <= 1.0 + radius * 0.6 && dz <= 1.0 + radius * 0.6;
+            return dx <= 1.0 && dz <= 1.0;
         }
 
         function getSupportSurfaceY(x: number, z: number, placedItems: PlacedItem[]): number {
@@ -732,20 +851,52 @@ export const BabylonScene: React.FC = () => {
 
         // ── MAIN LOOP ────────────────────────────────────────────────────────
         let prevItems: PlacedItem[] = [];
+        let prevDraft: PlacedItem | null = null;
+        let prevMoveModeItemId: string | null = null;
         let elapsed = 0;
         const lastSpawnTime: Record<string, number> = {};
         scene.registerBeforeRender(() => {
             const st = factoryStore.getState();
-            const { isRunning, isPaused, placedItems } = st;
+            const { isRunning, isPaused, placedItems, draftPlacement, moveModeItemId } = st;
             const delta = (isRunning && !isPaused) ? ((engine.getDeltaTime() / 1000) * st.simSpeedMult) : 0;
             elapsed += delta;
             updateTeachZones(st);
             updateCameraHighlights(st);
 
             // Sync layout
-            if (placedItems !== prevItems) {
+            if (placedItems !== prevItems || draftPlacement !== prevDraft) {
                 prevItems = placedItems;
-                syncEntities(placedItems);
+                prevDraft = draftPlacement;
+                syncEntities(draftPlacement ? [...placedItems, draftPlacement] : placedItems);
+            }
+
+            // Sync gizmo state
+            if (moveModeItemId !== prevMoveModeItemId) {
+                prevMoveModeItemId = moveModeItemId;
+                if (moveModeItemId) {
+                    gizmoManager.positionGizmoEnabled = true;
+                    const node = entityNodes.get(moveModeItemId);
+                    if (node) {
+                        const targetItem = placedItems.find(i => i.id === moveModeItemId);
+                        if (gizmoManager.gizmos.positionGizmo && targetItem) {
+                            gizmoManager.gizmos.positionGizmo.snapDistance = targetItem.type === 'camera' ? 0.5 : 2;
+                        }
+                        gizmoManager.attachToMesh(node as AbstractMesh);
+                    }
+                } else {
+                    gizmoManager.positionGizmoEnabled = false;
+                    gizmoManager.attachToMesh(null);
+                }
+            } else if (moveModeItemId) {
+                // If the user changed the position via UI sliders, ensure the Gizmo visually stays synced without triggering an onDrag
+                const targetItem = placedItems.find(i => i.id === moveModeItemId);
+                if (targetItem && gizmoManager.attachedNode) {
+                    // Update only if distance is significant to avoid fighting with onDrag
+                    const nPos = gizmoManager.attachedNode.position;
+                    if (Math.abs(nPos.x - targetItem.position[0]) > 0.01 || Math.abs(nPos.z - targetItem.position[2]) > 0.01) {
+                        gizmoManager.attachedNode.position.set(targetItem.position[0], nPos.y, targetItem.position[2]);
+                    }
+                }
             }
 
             if (!st.buildMode && ghostNode) {
@@ -790,12 +941,19 @@ export const BabylonScene: React.FC = () => {
                 const template = templatePool.length > 0
                     ? templatePool[Math.floor(Math.random() * templatePool.length)]
                     : templates[Math.floor(Math.random() * templates.length)] || FALLBACK_PART_TEMPLATE;
-                const color = (item.config?.spawnColor && item.config.spawnColor !== 'any')
-                    ? item.config.spawnColor
+
+                // Color: use template's spawnColors pool if present, else its default color
+                const colorPool = template?.spawnColors?.length ? template.spawnColors : null;
+                const color = colorPool
+                    ? colorPool[Math.floor(Math.random() * colorPool.length)]
                     : (template?.color || ITEM_COLORS[Math.floor(Math.random() * ITEM_COLORS.length)]);
-                const size = item.config?.spawnSize && item.config.spawnSize !== 'any'
-                    ? item.config.spawnSize
+
+                // Size: use template's spawnSizes pool if present, else its default size
+                const sizePool = template?.spawnSizes?.length ? template.spawnSizes : null;
+                const size: PartSize = sizePool
+                    ? sizePool[Math.floor(Math.random() * sizePool.length)]
                     : (template?.size || randomPartSize());
+
                 simState.items.push({
                     id: Math.random().toString(36).slice(2),
                     templateId: template?.id,
@@ -807,6 +965,11 @@ export const BabylonScene: React.FC = () => {
                     size,
                     hasCenterHole: template?.hasCenterHole !== false,
                     hasIndexHole: template?.hasIndexHole !== false,
+                    // Bake template geometry fine-tune so in-game matches Part Creator
+                    radiusScale: template?.radiusScale ?? 1,
+                    heightScale: template?.heightScale ?? 1,
+                    scaleX: template?.scaleX ?? 1,
+                    scaleZ: template?.scaleZ ?? 1,
                 });
             });
 
@@ -862,7 +1025,11 @@ export const BabylonScene: React.FC = () => {
                 mesh.isVisible = true;
                 (mesh.material as PBRMaterial).albedoColor = hexToColor3(simItem.color);
                 const sizeScale = SIZE_DIAMETER[simItem.size] / 0.6;
-                mesh.scaling.set(sizeScale, 1, sizeScale);
+                const rs = simItem.radiusScale ?? 1;
+                const hs = simItem.heightScale ?? 1;
+                const sx = simItem.scaleX ?? 1;
+                const sz = simItem.scaleZ ?? 1;
+                mesh.scaling.set(sizeScale * rs * sx, hs, sizeScale * rs * sz);
 
                 if (simItem.state === 'grabbed') {
                     // Gripper controls position directly

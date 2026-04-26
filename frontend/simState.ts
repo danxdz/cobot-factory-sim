@@ -12,6 +12,11 @@ export interface SimItem {
     size: PartSize;
     hasCenterHole?: boolean;
     hasIndexHole?: boolean;
+    // Geometry fine-tune from Part Creator template
+    radiusScale?: number;
+    heightScale?: number;
+    scaleX?: number;     // box width override
+    scaleZ?: number;     // box depth override
     meshIndex?: number; // which pool slot this occupies
 }
 

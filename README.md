@@ -10,7 +10,7 @@ An interactive 3D physics simulation and programming environment for industrial 
 - **State Export/Import**: Save your fully configured factory layouts and cobot programs locally as JSON via the UI dashboard.
 
 ## Tech Stack
-- **Frontend**: React, TypeScript, TailwindCSS, Zustand (State Management)
+- **Frontend**: React, TypeScript, TailwindCSS via CDN, custom lightweight store
 - **3D Engine**: Babylon.js
 - **Icons**: Lucide-React
 - **Build Tool**: Vite
@@ -19,7 +19,7 @@ An interactive 3D physics simulation and programming environment for industrial 
 - `frontend/`: Contains the main simulation app.
   - `components/`: React UI overlays and the main `BabylonScene` canvas.
   - `babylon/`: Core 3D logic, including `cobotMesh` (kinematics/pathing) and `entityMeshes` (module geometry).
-  - `store.ts`: Zustand global state and local-storage persistence.
+  - `store.ts`: Custom global state and local-storage persistence.
 
 ## Getting Started
 

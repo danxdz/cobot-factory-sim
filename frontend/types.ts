@@ -20,8 +20,19 @@ export interface PartTemplate {
     shape: PartShape;
     color: string;
     size: PartSize;
-    hasCenterHole?: boolean; // For disc templates
-    hasIndexHole?: boolean; // For disc templates
+    // Multi-spawn options (any of the listed will spawn randomly)
+    spawnColors?: string[];   // if set, overrides color (random from list)
+    spawnSizes?: PartSize[];  // if set, overrides size (random from list)
+    // Disc fine-tune
+    hasCenterHole?: boolean;
+    hasIndexHole?: boolean;
+    numHoles?: number;        // extra holes around ring (0–8)
+    holeDiameter?: number;    // 0.05–0.4 relative
+    // Scale fine-tune per shape (override built-in size scale)
+    radiusScale?: number;     // 0.5–1.5 multiplier for disc/can radius
+    heightScale?: number;     // 0.5–2.0 multiplier for can/box/pyramid height
+    scaleX?: number;          // box width override
+    scaleZ?: number;          // box depth override
 }
 
 export interface ItemConfig {
@@ -84,10 +95,13 @@ export interface FactoryState {
     simSpeedMult: number;
     partTemplates: PartTemplate[];
     placedItems: PlacedItem[];
+    draftPlacement: PlacedItem | null;
     buildMode: ItemType | null;
     buildRotation: Direction;
     buildConfig: ItemConfig;
     selectedItemId: string | null;
+    moveModeItemId: string | null;
+    moveModeOriginalItem: PlacedItem | null;
     teachAction: 'pick' | 'drop' | null; // Active when teaching a cobot
     machineStates: Record<string, MachineRuntimeState>;
     
@@ -100,10 +114,12 @@ export interface FactoryState {
     updatePartTemplate: (id: string, updates: Partial<Omit<PartTemplate, 'id'>>) => void;
     removePartTemplate: (id: string) => void;
     clonePartTemplate: (id: string) => string | null;
+    setDraftPlacement: (draft: PlacedItem | null) => void;
     setBuildMode: (mode: ItemType | null) => void;
     setBuildRotation: (rot: Direction) => void;
     setBuildConfig: (config: Partial<ItemConfig>) => void;
     setSelectedItemId: (id: string | null) => void;
+    setMoveModeItemId: (id: string | null) => void;
     setTeachAction: (action: 'pick' | 'drop' | null) => void;
     setMachineState: (id: string, runtime: MachineRuntimeState) => void;
     clearMachineStates: () => void;

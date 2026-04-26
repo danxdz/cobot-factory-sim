@@ -223,6 +223,23 @@ export function createPile(item: PlacedItem, scene: Scene, isGhost = false): Tra
         box('wallW', wallT, 0.6, Math.max(0.2, d - wallT * 2), new Vector3(-w / 2 + wallT / 2, h + 0.3, 0), wallMat, scene, root);
     }
 
+    const markMat = pbr(scene, '#e2e8f0', 0, 0.6, isGhost ? 0.25 : 0.45);
+    markMat.emissiveColor = Color3.FromHexString('#e2e8f0').scale(0.06);
+
+    const [cols, rows] = item.config?.tableGrid || [2, 2];
+    const topY = h + 0.022;
+    const usableWidth = showWalls ? Math.max(0.2, w - wallT * 4) : w - 0.04;
+    const usableDepth = showWalls ? Math.max(0.2, d - wallT * 4) : d - 0.04;
+    
+    for (let c = 0; c <= cols; c++) {
+        const x = -usableWidth / 2 + usableWidth * (c / cols);
+        box(`gridCol${c}`, 0.016, 0.008, usableDepth, new Vector3(x, topY, 0), markMat, scene, root);
+    }
+    for (let r = 0; r <= rows; r++) {
+        const z = -usableDepth / 2 + usableDepth * (r / rows);
+        box(`gridRow${r}`, usableWidth, 0.008, 0.016, new Vector3(0, topY, z), markMat, scene, root);
+    }
+
     return root;
 }
 
@@ -286,12 +303,13 @@ export function createCameraEntity(item: PlacedItem, scene: Scene, isGhost = fal
     const bodyMat = pbr(scene, '#cbd5e1', 0, 0.5, isGhost ? 0.4 : 1);
     const lensMat = pbr(scene, '#0f172a', 0, 1, isGhost ? 0.4 : 1);
 
-    cyl('pole', 0.05, 3.2, new Vector3(-0.9, 1.6, 0), poleMat, scene, root);
+    cyl('pole', 0.05, 3.2, new Vector3(-0.9, 1.6, 0.9), poleMat, scene, root);
 
     const camRoot = new TransformNode('camRoot', scene);
     camRoot.parent = root;
-    camRoot.position = new Vector3(-0.9, 3.2, 0);
-    camRoot.rotation.z = 0.291; // Angle to point inwards (+X) towards the belt
+    camRoot.position = new Vector3(-0.9, 3.2, 0.9);
+    camRoot.rotation.y = -Math.PI / 4; // Point diagonally towards center
+    camRoot.rotation.z = 0.38; // Tilt down towards center
 
     box('camBody', 0.3, 0.4, 0.3, new Vector3(0, 0, 0), bodyMat, scene, camRoot);
     cyl('lens', 0.1, 0.15, new Vector3(0, -0.275, 0), lensMat, scene, camRoot);

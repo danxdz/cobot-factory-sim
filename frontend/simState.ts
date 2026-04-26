@@ -25,8 +25,10 @@ export interface CameraDetection {
 export const simState = {
     items: [] as SimItem[],
     cameraDetections: [] as CameraDetection[],
+    cobotWrists: {} as Record<string, Vector3>,
     reset: () => {
         simState.items = [];
         simState.cameraDetections = [];
+        simState.cobotWrists = {};
     }
 };

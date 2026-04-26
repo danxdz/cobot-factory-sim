@@ -219,6 +219,7 @@ export const BabylonScene: React.FC = () => {
                         tableHeight: item.config?.tableHeight,
                         tableGrid: item.config?.tableGrid,
                         showTableGrid: item.config?.showTableGrid,
+                        showWalls: item.config?.showWalls,
                     })
                     : '';
                 const sig = `${item.position.join(',')}_${item.rotation}_${visualConfigSig}`;
@@ -375,15 +376,20 @@ export const BabylonScene: React.FC = () => {
                     ball.isPickable = false;
                     ball.parent = teachZoneRoot;
 
-                    const core = MeshBuilder.CreateSphere(`teach_${step.action}_core_${idx}`, {
-                        diameter: 0.14,
-                        segments: 16,
-                    }, scene);
-                    core.position.copyFrom(ball.position);
-                    core.material = cMat;
-                    core.isPickable = false;
-                    core.parent = teachZoneRoot;
-                    core.renderingGroupId = 2;
+                    const surfaceY = getSupportSurfaceY(step.pos[0], step.pos[2], st.placedItems);
+                    const isClipping = step.pos[1] < surfaceY - 0.04;
+
+                    if (isClipping) {
+                        const core = MeshBuilder.CreateSphere(`teach_${step.action}_core_${idx}`, {
+                            diameter: 0.18, // slightly larger so it's obvious
+                            segments: 16,
+                        }, scene);
+                        core.position.copyFrom(ball.position);
+                        core.material = dropCoreMat; // Always red for warning
+                        core.isPickable = false;
+                        core.parent = teachZoneRoot;
+                        core.renderingGroupId = 2;
+                    }
                 });
             }
         }
@@ -459,7 +465,7 @@ export const BabylonScene: React.FC = () => {
                 }
             }
 
-            if (info.type === PointerEventTypes.POINTERDOWN) {
+            if (info.type === PointerEventTypes.POINTERTAP) {
                 const st2 = factoryStore.getState();
                 const pointerEvent = info.event as PointerEvent;
                 if (pointerEvent.button === 2) return;
@@ -587,7 +593,8 @@ export const BabylonScene: React.FC = () => {
 
         function itemSurfaceCenterY(item: PlacedItem): number {
             if (item.type === 'belt') return (item.config?.beltHeight || TILE_CENTER_Y) + DISC_HALF_H + 0.018;
-            if (['sender','receiver','indexed_receiver','pile'].includes(item.type)) return (item.config?.machineHeight || TILE_CENTER_Y) + DISC_HALF_H + 0.012;
+            if (['sender','receiver','indexed_receiver'].includes(item.type)) return (item.config?.machineHeight || TILE_CENTER_Y) + DISC_HALF_H + 0.012;
+            if (item.type === 'pile') return (item.config?.machineHeight || 0.7) + DISC_HALF_H + 0.012;
             if (item.type === 'table') return (item.config?.tableHeight || TABLE_CENTER_Y) + DISC_HALF_H + 0.014;
             if (item.type === 'cobot') return COBOT_PLATFORM_CENTER_Y;
             return DISC_HALF_H;
@@ -674,7 +681,7 @@ export const BabylonScene: React.FC = () => {
         let elapsed = 0;
         const lastSpawnTime: Record<string, number> = {};
         scene.registerBeforeRender(() => {
-            const delta = engine.getDeltaTime() / 1000;
+            const delta = (engine.getDeltaTime() / 1000) * factoryStore.getState().simSpeedMult;
             elapsed += delta;
             const st = factoryStore.getState();
             const { isRunning, placedItems } = st;
@@ -909,7 +916,7 @@ export const BabylonScene: React.FC = () => {
             if (st.isRunning && simState.items.length === 0) {
                 st.placedItems.forEach(item => {
                     if (item.type !== 'pile') return;
-                    const count = item.config?.pileCount || 12;
+                    const count = item.config?.pileCount ?? 0;
                     const cols = 3;
                     const [w, d] = item.config?.machineSize || [2, 2];
                     const spacing = Math.min(0.52, Math.max(0.22, Math.min(w, d) / Math.max(2, cols)));

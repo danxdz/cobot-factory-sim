@@ -65,6 +65,7 @@ export interface FactoryState {
     credits: number;
     score: number;
     isRunning: boolean;
+    simSpeedMult: number;
     placedItems: PlacedItem[];
     buildMode: ItemType | null;
     buildRotation: Direction;
@@ -76,6 +77,7 @@ export interface FactoryState {
     setCredits: (credits: number) => void;
     setScore: (score: number | ((prev: number) => number)) => void;
     setIsRunning: (isRunning: boolean) => void;
+    setSimSpeedMult: (mult: number) => void;
     setBuildMode: (mode: ItemType | null) => void;
     setBuildRotation: (rot: Direction) => void;
     setBuildConfig: (config: Partial<ItemConfig>) => void;

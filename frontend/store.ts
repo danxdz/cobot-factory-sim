@@ -62,6 +62,7 @@ class Store {
             score: initialState.score,
             placedItems: initialState.placedItems,
             isRunning: false,
+            simSpeedMult: 1,
             buildMode: null,
             buildRotation: 0,
             buildConfig: { speed: 1 },
@@ -91,6 +92,7 @@ class Store {
                     this.setState({ isRunning, buildMode: null, teachAction: null, selectedItemId: null });
                 }
             },
+            setSimSpeedMult: (mult: number) => this.setState({ simSpeedMult: mult }),
             setBuildMode: (buildMode: ItemType | null) => {
                 let defaultConfig: ItemConfig = { speed: 1 };
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }

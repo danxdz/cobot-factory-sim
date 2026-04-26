@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Square, Trash2, Settings2, X, RotateCw, Cpu, MapPin, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, Menu, Download, Upload } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, MapPin, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, Menu, Download, Upload } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartSize, ProgramAction, ProgramStep } from '../types';
 import { simState } from '../simState';
@@ -47,6 +47,8 @@ export const UI: React.FC = () => {
     const [snapInputs, setSnapInputs] = useState(true);
     const [editingName, setEditingName] = useState(false);
     const [draftName, setDraftName] = useState('');
+    const [activeGroup, setActiveGroup] = useState<string | null>(null);
+    const [playClicks, setPlayClicks] = useState({ count: 0, time: 0 });
     const { 
         credits, 
         score,
@@ -63,7 +65,9 @@ export const UI: React.FC = () => {
         updatePlacedItem,
         removePlacedItem,
         setCredits,
-        resetFactory
+        resetFactory,
+        simSpeedMult,
+        setSimSpeedMult
     } = useFactoryStore();
 
     const selectedItem = placedItems.find(i => i.id === selectedItemId);
@@ -105,6 +109,32 @@ export const UI: React.FC = () => {
                     badge: 'bg-gray-800 text-gray-300 border-gray-700',
                     dot: 'bg-gray-500',
                 };
+
+    const handlePlayClick = () => {
+        setIsRunning(!isRunning);
+        const now = Date.now();
+        if (now - playClicks.time < 500) {
+            const newCount = playClicks.count + 1;
+            if (newCount >= 4) { // 5th click (0-4)
+                useFactoryStore.getState().setCredits(credits + 10000);
+                setPlayClicks({ count: 0, time: 0 });
+            } else {
+                setPlayClicks({ count: newCount, time: now });
+            }
+        } else {
+            setPlayClicks({ count: 1, time: now });
+        }
+    };
+
+    const handleStopClick = () => {
+        setIsRunning(false);
+        simState.reset();
+        useFactoryStore.getState().placedItems.forEach(item => {
+            if (item.type === 'cobot') {
+                updatePlacedItem(item.id, { config: { ...item.config, isStopped: false } });
+            }
+        });
+    };
 
     const handleBuildClick = (type: ItemType) => {
         setBuildMode(buildMode === type ? null : type);
@@ -280,67 +310,6 @@ export const UI: React.FC = () => {
                         </h1>
                         <p className="text-gray-400 font-mono text-sm mt-1">Simulation Sandbox</p>
                     </div>
-
-                    <div className="bg-gray-900/90 backdrop-blur-md rounded-xl p-2 shadow-xl border border-gray-700 flex gap-2">
-                        <button 
-                            onClick={() => setIsRunning(!isRunning)}
-                            className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold transition-all
-                                ${isRunning 
-                                    ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' 
-                                    : 'bg-emerald-500 text-white hover:bg-emerald-400 shadow-lg shadow-emerald-500/20'}`}
-                        >
-                            {isRunning ? <><Square size={18} fill="currentColor" /> STOP</> : <><Play size={18} fill="currentColor" /> PLAY</>}
-                        </button>
-                        <button 
-                            onClick={resetFactory}
-                            className="px-4 py-3 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-                            title="Reset Factory"
-                        >
-                            <Trash2 size={18} />
-                        </button>
-                        <button 
-                            onClick={() => {
-                                const stateStr = localStorage.getItem('cobot-factory-sim-v8');
-                                if (!stateStr) return;
-                                const blob = new Blob([stateStr], { type: 'application/json' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = `cobot-factory-${new Date().getTime()}.json`;
-                                a.click();
-                                URL.revokeObjectURL(url);
-                            }}
-                            className="px-4 py-3 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-                            title="Export Setup"
-                        >
-                            <Download size={18} />
-                        </button>
-                        <button 
-                            onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = 'application/json';
-                                input.onchange = (e) => {
-                                    const file = (e.target as HTMLInputElement).files?.[0];
-                                    if (!file) return;
-                                    const reader = new FileReader();
-                                    reader.onload = (re) => {
-                                        const str = re.target?.result as string;
-                                        if (str) {
-                                            localStorage.setItem('cobot-factory-sim-v8', str);
-                                            window.location.reload();
-                                        }
-                                    };
-                                    reader.readAsText(file);
-                                };
-                                input.click();
-                            }}
-                            className="px-4 py-3 rounded-lg bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
-                            title="Import Setup"
-                        >
-                            <Upload size={18} />
-                        </button>
-                    </div>
                 </div>
 
                 <div className="flex flex-col gap-2 pointer-events-auto items-end">
@@ -414,9 +383,20 @@ export const UI: React.FC = () => {
                                     </button>
                                 )}
                             </div>
-                            <button onClick={() => setSelectedItemId(null)} className="text-gray-400 hover:text-white">
-                                <X size={20} />
-                            </button>
+                            <div className="flex items-center gap-2">
+                                {selectedItem.type === 'cobot' && (
+                                    <button 
+                                        onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, isStopped: !selectedItem.config?.isStopped } })}
+                                        className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-red-400 hover:bg-red-500/20' : 'text-emerald-400 hover:bg-emerald-500/20'}`}
+                                        title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
+                                    >
+                                        {selectedItem.config?.isStopped ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+                                    </button>
+                                )}
+                                <button onClick={() => setSelectedItemId(null)} className="text-gray-400 hover:text-white">
+                                    <X size={20} />
+                                </button>
+                            </div>
                         </div>
 
                         {selectedItem.type === 'cobot' && (
@@ -448,21 +428,9 @@ export const UI: React.FC = () => {
                         <div className="flex items-start justify-between gap-6">
                             {/* Specific Configs */}
                             <div className="flex flex-col gap-1.5 flex-1">
-                                <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
-                                    <button
-                                        onClick={() => setShowMainOptions(v => !v)}
-                                        className="w-full flex items-center justify-between px-2 py-1.5 text-left"
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <Menu size={14} className="text-yellow-400" />
-                                            <span className="text-[10px] text-gray-300 font-bold">MAIN OPTIONS</span>
-                                        </div>
-                                        {showMainOptions ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                                    </button>
-                                    {showMainOptions && (
-                                        <div className="px-2 pb-2 border-t border-gray-700 flex flex-col gap-1.5">
-                                            <div className="pt-2 flex flex-col gap-1.5 w-full">
-                                                {!teachMinimized && renderModuleLayoutControls()}
+                                <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden flex flex-col gap-1.5 px-2 pb-2">
+                                    <div className="pt-2 flex flex-col gap-1.5 w-full">
+                                        {!teachMinimized && renderModuleLayoutControls()}
                                 {selectedItem.type === 'sender' && !teachMinimized && (
                                     <div className="flex flex-col gap-2 w-full">
                                         <div className="flex justify-between">
@@ -564,32 +532,57 @@ export const UI: React.FC = () => {
                                 )}
                                                 {selectedItem.type === 'cobot' && !teachMinimized && (
                                                     <>
-                                                        <div className="grid grid-cols-3 gap-3">
-                                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
-                                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
-                                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
-                                                        </div>
-                                                        <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
-
-                                                        <div className="flex gap-2 w-full">
-                                                            <div className="flex flex-col gap-0.5 w-1/2">
-                                                                <span className="text-[9px] font-bold text-gray-500">STACK GRID (WxD)</span>
-                                                                <div className="flex items-center gap-1">
-                                                                    <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 2] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
-                                                                    <span className="text-gray-500 text-[10px]">x</span>
-                                                                    <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 2, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                        {selectedItem.config?.collisionStopped && (
+                                                            <div className="bg-red-900/30 border border-red-500 rounded p-2 mb-3">
+                                                                <span className="text-red-400 text-[10px] font-bold block mb-1">⚠️ SAFETY STOP ENGAGED</span>
+                                                                <button 
+                                                                    onClick={unlockSelectedCobot}
+                                                                    className="w-full bg-red-600 hover:bg-red-500 text-white rounded py-1 text-[10px] font-bold"
+                                                                >
+                                                                    UNLOCK COBOT
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                        <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden mb-2 mt-1">
+                                                            <button
+                                                                onClick={() => setShowTransforms(v => !v)}
+                                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left"
+                                                            >
+                                                                <div className="flex items-center gap-2">
+                                                                    <Menu size={14} className="text-pink-400" />
+                                                                    <span className="text-[10px] text-gray-300 font-bold">TRANSFORM & KINEMATICS</span>
                                                                 </div>
-                                                            </div>
-                                                            <div className="flex flex-col gap-0.5 w-1/2">
-                                                                <span className="text-[9px] font-bold text-gray-500">MAX STACK H.</span>
-                                                                <input type="number" min="1" max="20" value={selectedItem.config?.stackMax || 10} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMax: parseInt(e.target.value) || 10 } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
-                                                            </div>
+                                                                {showTransforms ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                                                            </button>
+                                                            {showTransforms && (
+                                                                <div className="px-2 pb-2 border-t border-gray-700 flex flex-col gap-1.5 pt-2">
+                                                                    <div className="grid grid-cols-3 gap-3">
+                                                                        <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
+                                                                        <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
+                                                                        <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
+                                                                    </div>
+                                                                    <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+
+                                                                    <div className="flex gap-2 w-full mt-1">
+                                                                        <div className="flex flex-col gap-0.5 w-1/2">
+                                                                            <span className="text-[9px] font-bold text-gray-500">STACK GRID (WxD)</span>
+                                                                            <div className="flex items-center gap-1">
+                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 2] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                                <span className="text-gray-500 text-[10px]">x</span>
+                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 2, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="flex flex-col gap-0.5 w-1/2">
+                                                                            <span className="text-[9px] font-bold text-gray-500">MAX STACK H.</span>
+                                                                            <input type="number" min="1" max="20" value={selectedItem.config?.stackMax || 10} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMax: parseInt(e.target.value) || 10 } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     </>
                                                 )}
                                             </div>
-                                        </div>
-                                    )}
                                 </div>
 
                                 {selectedItem.type === 'cobot' && (
@@ -931,78 +924,86 @@ export const UI: React.FC = () => {
                                 <span>Click grid to place</span>
                                 <span className="bg-blue-600 px-2 py-0.5 rounded text-xs">Press 'R' to rotate</span>
                             </div>
-                        ) : (
-                            <div className="bg-gray-800/80 backdrop-blur-sm text-gray-300 px-6 py-2 rounded-full text-sm font-bold shadow-lg">
-                                {isRunning ? "Simulation running..." : "Select an item below to build, or click placed items to configure"}
-                            </div>
-                        )}
+                        ) : null}
 
-                        <div className="bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-700 p-2 flex gap-2 overflow-x-auto max-w-full">
-                            <BuildButton 
-                                title="SENDER" 
-                                cost={ITEM_COSTS.sender} 
-                                isActive={buildMode === 'sender'}
-                                onClick={() => handleBuildClick('sender')}
-                                disabled={credits < ITEM_COSTS.sender || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="BELT" 
-                                cost={ITEM_COSTS.belt} 
-                                isActive={buildMode === 'belt'}
-                                onClick={() => handleBuildClick('belt')}
-                                disabled={credits < ITEM_COSTS.belt || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="COBOT ARM" 
-                                cost={ITEM_COSTS.cobot} 
-                                isActive={buildMode === 'cobot'}
-                                onClick={() => handleBuildClick('cobot')}
-                                disabled={credits < ITEM_COSTS.cobot || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="RECEIVER" 
-                                cost={ITEM_COSTS.receiver} 
-                                isActive={buildMode === 'receiver'}
-                                onClick={() => handleBuildClick('receiver')}
-                                disabled={credits < ITEM_COSTS.receiver || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="TABLE" 
-                                cost={ITEM_COSTS.table} 
-                                isActive={buildMode === 'table'}
-                                onClick={() => handleBuildClick('table')}
-                                disabled={credits < ITEM_COSTS.table || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="CAMERA" 
-                                cost={ITEM_COSTS.camera} 
-                                isActive={buildMode === 'camera'}
-                                onClick={() => handleBuildClick('camera')}
-                                disabled={credits < ITEM_COSTS.camera || isRunning}
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="PILE BIN" 
-                                cost={ITEM_COSTS.pile} 
-                                isActive={buildMode === 'pile'}
-                                onClick={() => handleBuildClick('pile')}
-                                disabled={credits < ITEM_COSTS.pile || isRunning}
-                                color="amber"
-                            />
-                            <div className="w-px bg-gray-700 my-2"></div>
-                            <BuildButton 
-                                title="IDX RECV" 
-                                cost={ITEM_COSTS.indexed_receiver} 
-                                isActive={buildMode === 'indexed_receiver'}
-                                onClick={() => handleBuildClick('indexed_receiver')}
-                                disabled={credits < ITEM_COSTS.indexed_receiver || isRunning}
-                                color="amber"
-                            />
+                        <div className="bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-700 p-2 flex gap-3 overflow-visible items-center">
+                            
+                            <div className="flex items-center gap-2 mr-2">
+                                <button 
+                                    onClick={handlePlayClick}
+                                    className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
+                                    title={isRunning ? "Pause" : "Play (Click 5 times for +10k credits)"}
+                                >
+                                    {isRunning ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+                                </button>
+                                <button 
+                                    onClick={handleStopClick}
+                                    className={`flex items-center justify-center p-3 rounded-xl transition-all bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white`}
+                                    title="Stop & Reset Items"
+                                >
+                                    <Square size={20} fill="currentColor" />
+                                </button>
+
+                                <div className="flex flex-col gap-1 ml-1">
+                                    <input 
+                                        type="range" min="1" max="10" step="1" 
+                                        value={simSpeedMult} onChange={e => setSimSpeedMult(parseInt(e.target.value))}
+                                        className="w-20 accent-emerald-500 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                                        title={`Speed: ${simSpeedMult}x`}
+                                    />
+                                    <div className="flex gap-1">
+                                        <button onClick={resetFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
+                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v8', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
+                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="w-px h-8 bg-gray-700"></div>
+
+                            {/* BUILD GROUPS */}
+                            <div className="flex gap-2 relative">
+                                {[
+                                    { id: 'surfaces', icon: <Square size={18} />, label: 'Surfaces', items: ['belt', 'table', 'pile'] as ItemType[] },
+                                    { id: 'machines', icon: <Cpu size={18} />, label: 'Machines', items: ['sender', 'receiver', 'indexed_receiver'] as ItemType[] },
+                                    { id: 'tech', icon: <Camera size={18} />, label: 'Tech', items: ['cobot', 'camera'] as ItemType[] }
+                                ].map(group => {
+                                    const isGroupActive = activeGroup === group.id;
+                                    const hasActiveItem = group.items.includes(buildMode as ItemType);
+                                    
+                                    return (
+                                        <div key={group.id} className="relative">
+                                            <button
+                                                onClick={() => setActiveGroup(isGroupActive ? null : group.id)}
+                                                className={`flex items-center gap-2 px-3 py-2 rounded-lg font-bold transition-all ${isGroupActive || hasActiveItem ? 'bg-blue-500 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                                            >
+                                                {group.icon}
+                                                <span className="text-xs">{group.label}</span>
+                                                <ChevronDown size={14} className={`transition-transform ${isGroupActive ? 'rotate-180' : ''}`} />
+                                            </button>
+                                            
+                                            {isGroupActive && (
+                                                <div className="absolute bottom-full left-0 mb-2 bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-2 flex flex-col gap-1 w-48 animate-fade-in origin-bottom">
+                                                    {group.items.map(type => (
+                                                        <BuildButton 
+                                                            key={type}
+                                                            title={type.replace('_', ' ').toUpperCase()} 
+                                                            cost={ITEM_COSTS[type]} 
+                                                            isActive={buildMode === type}
+                                                            onClick={() => {
+                                                                handleBuildClick(type);
+                                                                setActiveGroup(null);
+                                                            }}
+                                                            disabled={credits < ITEM_COSTS[type] || isRunning}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
                         </div>
                     </>
                 )}

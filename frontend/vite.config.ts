@@ -22,5 +22,16 @@ export default defineConfig(({ mode }) => {
       optimizeDeps: {
         exclude: ['@babylonjs/core', '@babylonjs/havok'],
       },
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks: (id) => {
+              if (id.includes('@babylonjs')) {
+                return 'babylon';
+              }
+            }
+          }
+        }
+      }
     };
 });

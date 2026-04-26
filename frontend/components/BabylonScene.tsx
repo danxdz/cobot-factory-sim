@@ -25,8 +25,8 @@ const DISC_RADIUS = SIZE_DIAMETER.large / 2;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
 const COBOT_PLATFORM_CENTER_Y = 1.378;
-const COBOT_PLATFORM_HALF_W = 0.99;
-const COBOT_PLATFORM_HALF_D = 0.99;
+const COBOT_PLATFORM_W = 1.98;
+const COBOT_PLATFORM_D = 1.98;
 const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_MOUNT_RANGE_Y = 1.58;
 const FALLBACK_PART_TEMPLATE: PartTemplate = {
@@ -78,8 +78,8 @@ function cobotMountLocal(config?: PlacedItem['config']) {
     const mountSlot = config?.mountSlot || [cols - 1, rows - 1];
     const mountCol = Math.max(0, Math.min(cols - 1, Math.round(mountSlot[0] ?? (cols - 1))));
     const mountRow = Math.max(0, Math.min(rows - 1, Math.round(mountSlot[1] ?? (rows - 1))));
-    const usableW = Math.max(0.2, COBOT_PLATFORM_HALF_W * 2 - COBOT_PLATFORM_MARGIN);
-    const usableD = Math.max(0.2, COBOT_PLATFORM_HALF_D * 2 - COBOT_PLATFORM_MARGIN);
+    const usableW = Math.max(0.2, COBOT_PLATFORM_W - COBOT_PLATFORM_MARGIN);
+    const usableD = Math.max(0.2, COBOT_PLATFORM_D - COBOT_PLATFORM_MARGIN);
     const cellW = usableW / cols;
     const cellD = usableD / rows;
     return {
@@ -237,8 +237,8 @@ export const BabylonScene: React.FC = () => {
 
         function cobotRuntimeState(cState: CobotState, isRunning: boolean): MachineRuntimeState {
             if (!isRunning) return { health: 'idle', label: 'Idle', detail: 'Simulation stopped' };
-            if (cState.safetyStopped) return { health: 'warning', label: 'Collision', detail: 'This cobot is paused after a local collision' };
-            if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Struggling', detail: 'Obstacle contact while trying to move' };
+            if (cState.safetyStopped) return { health: 'warning', label: 'Safety Stop', detail: 'Paused due to obstruction or rule violation' };
+            if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Obstructed', detail: 'Obstacle repulsion active while moving' };
             if (cState.isFull) return { health: 'stopped', label: 'Full', detail: 'Container stack is at capacity' };
             if (cState.phase === 'release') return { health: 'running', label: 'Dropping', detail: 'Releasing part onto target' };
             if (['pick_hover', 'pick_descend', 'pick_attach'].includes(cState.phase)) {
@@ -369,6 +369,7 @@ export const BabylonScene: React.FC = () => {
                         cState.targetedItem = null;
                         cState.blockedTimer = 0;
                         cState.targetTimer = 0;
+                        cState.recoveryTimer = 2.0;
                         cState.desiredTarget.copyFrom(cState.idleTarget);
                     }
                     if (!itm.config?.collisionStopped) cState.safetyStopped = false;
@@ -441,10 +442,10 @@ export const BabylonScene: React.FC = () => {
 
         const cameraLinkRoot = new TransformNode('cameraLinkHighlights', scene);
         const linkedCameraMat = new PBRMaterial('linkedCameraMat', scene);
-        linkedCameraMat.albedoColor = Color3.FromHexString('#67e8f9');
-        linkedCameraMat.emissiveColor = Color3.FromHexString('#67e8f9').scale(0.85);
-        linkedCameraMat.alpha = 0.82;
-        linkedCameraMat.transparencyMode = 2;
+        linkedCameraMat.albedoColor = Color3.FromHexString('#22c55e');
+        linkedCameraMat.emissiveColor = Color3.FromHexString('#22c55e').scale(0.5);
+        linkedCameraMat.metallic = 0.1;
+        linkedCameraMat.roughness = 0.4;
 
         function clearTeachZones() {
             teachZoneRoot.getChildMeshes().forEach(m => m.dispose());
@@ -538,31 +539,23 @@ export const BabylonScene: React.FC = () => {
             const linkedIds = selected?.type === 'cobot' ? selected.config?.linkedCameraIds || [] : [];
             const linkedCams = st.placedItems.filter(i => i.type === 'camera' && linkedIds.includes(i.id));
             const nextSig = selected?.type === 'cobot'
-                ? JSON.stringify({ cobot: selected.id, cams: linkedCams.map(cam => [cam.id, cam.position, cam.name]) })
+                ? JSON.stringify({ cobot: selected.id, cams: linkedCams.map(cam => cam.id) })
                 : '';
             if (nextSig === cameraHighlightSig) return;
             cameraHighlightSig = nextSig;
             clearCameraHighlights();
-            linkedCams.forEach((cam, idx) => {
-                const ring = MeshBuilder.CreateTorus(`linked_cam_ring_${idx}`, {
-                    diameter: 0.72,
-                    thickness: 0.035,
-                    tessellation: 48,
-                }, scene);
-                ring.position.set(cam.position[0], cam.position[1] + 3.8, cam.position[2]);
-                ring.material = linkedCameraMat;
-                ring.isPickable = false;
-                ring.parent = cameraLinkRoot;
 
-                const marker = MeshBuilder.CreateBox(`linked_cam_marker_${idx}`, {
-                    width: 0.16,
-                    height: 0.16,
-                    depth: 0.16,
-                }, scene);
-                marker.position.set(cam.position[0], cam.position[1] + 3.8, cam.position[2]);
-                marker.material = linkedCameraMat;
-                marker.isPickable = false;
-                marker.parent = cameraLinkRoot;
+            st.placedItems.filter(i => i.type === 'camera').forEach(cam => {
+                const node = entityNodes.get(cam.id);
+                if (!node) return;
+                const bodyMesh = node.getChildMeshes().find(m => m.name === 'camBody');
+                if (bodyMesh) {
+                    if (!(bodyMesh as any).__originalMat) {
+                        (bodyMesh as any).__originalMat = bodyMesh.material;
+                    }
+                    const isLinked = linkedCams.some(c => c.id === cam.id);
+                    bodyMesh.material = isLinked ? linkedCameraMat : (bodyMesh as any).__originalMat;
+                }
             });
         }
 
@@ -787,22 +780,17 @@ export const BabylonScene: React.FC = () => {
             if (item.type === 'camera') return false;
             const dx = Math.abs(x - item.position[0]);
             const dz = Math.abs(z - item.position[2]);
-            if (item.type === 'table') {
-                const [w, d] = item.config?.tableSize || [1.8, 1.8];
-                return dx <= w / 2 && dz <= d / 2;
-            }
-            if (item.type === 'belt') {
-                const [w, d] = item.config?.beltSize || [2, 2];
-                return dx <= w / 2 && dz <= d / 2;
-            }
-            if (['sender','receiver','indexed_receiver','pile'].includes(item.type)) {
-                const [w, d] = item.config?.machineSize || [2, 2];
-                return dx <= w / 2 && dz <= d / 2;
-            }
-            if (item.type === 'cobot') {
-                return dx <= COBOT_PLATFORM_HALF_W && dz <= COBOT_PLATFORM_HALF_D;
-            }
-            return dx <= 1.0 && dz <= 1.0;
+            const isRotated = (item.rotation || 0) % 2 !== 0;
+            const lx = isRotated ? dz : dx;
+            const lz = isRotated ? dx : dz;
+
+            let w = 2, d = 2;
+            if (item.type === 'table') [w, d] = item.config?.tableSize || [1.8, 1.8];
+            else if (item.type === 'belt') [w, d] = item.config?.beltSize || [2, 2];
+            else if (['sender','receiver','indexed_receiver','pile'].includes(item.type)) [w, d] = item.config?.machineSize || [2, 2];
+            else if (item.type === 'cobot') { w = COBOT_PLATFORM_W; d = COBOT_PLATFORM_D; }
+
+            return lx <= w / 2 && lz <= d / 2;
         }
 
         function getSupportSurfaceY(x: number, z: number, placedItems: PlacedItem[]): number {
@@ -818,7 +806,12 @@ export const BabylonScene: React.FC = () => {
             return placedItems.find(item => {
                 if (item.type !== 'belt' && item.type !== 'sender') return false;
                 const [w, d] = item.type === 'belt' ? (item.config?.beltSize || [2, 2]) : (item.config?.machineSize || [2, 2]);
-                return Math.abs(x - item.position[0]) <= w / 2 && Math.abs(z - item.position[2]) <= d / 2;
+                const dx = Math.abs(x - item.position[0]);
+                const dz = Math.abs(z - item.position[2]);
+                const isRotated = (item.rotation || 0) % 2 !== 0;
+                const lx = isRotated ? dz : dx;
+                const lz = isRotated ? dx : dz;
+                return lx <= w / 2 && lz <= d / 2;
             });
         }
 
@@ -1141,6 +1134,7 @@ export const BabylonScene: React.FC = () => {
             const isRepellable = (item: typeof items[0]) => {
                 if (item.state !== 'free') return false;
                 if (item.pos.y > 0.65) return false;
+                if (item.pos.y < 0.1) return true; // Always repel items on the floor!
                 const gx = Math.round(item.pos.x / 2.5) * 2.5;
                 const gz = Math.round(item.pos.z / 2.5) * 2.5;
                 const tile = placedItems.find(p => Math.abs(p.position[0] - gx) < 0.1 && Math.abs(p.position[2] - gz) < 0.1);
@@ -1162,6 +1156,40 @@ export const BabylonScene: React.FC = () => {
                         items[i].pos.z -= nz * push;
                         items[j].pos.x += nx * push;
                         items[j].pos.z += nz * push;
+                    }
+                }
+                
+                // Item-to-Machine repulsion
+                for (const machine of placedItems) {
+                    if (['belt', 'camera', 'pile', 'table'].includes(machine.type)) continue;
+                    const w = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[0] || 2);
+                    const d = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[1] || 2);
+                    const radius = partRadius(items[i].size) + 0.06;
+                    
+                    const isRotated = machine.rotation % 2 !== 0;
+                    const effW = isRotated ? d : w;
+                    const effD = isRotated ? w : d;
+                    
+                    const localX = items[i].pos.x - machine.position[0];
+                    const localZ = items[i].pos.z - machine.position[2];
+                    
+                    const halfW = effW / 2;
+                    const halfD = effD / 2;
+                    
+                    const cx = Math.max(-halfW, Math.min(halfW, localX));
+                    const cz = Math.max(-halfD, Math.min(halfD, localZ));
+                    
+                    const dx = localX - cx;
+                    const dz = localZ - cz;
+                    const distSq = dx * dx + dz * dz;
+                    
+                    if (distSq < radius * radius && distSq > 0.00001) {
+                        const dist = Math.sqrt(distSq);
+                        const push = radius - dist;
+                        items[i].pos.x += (dx / dist) * push;
+                        items[i].pos.z += (dz / dist) * push;
+                    } else if (distSq <= 0.00001) {
+                        items[i].pos.x += radius;
                     }
                 }
             }

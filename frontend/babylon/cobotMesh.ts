@@ -33,7 +33,7 @@ const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_PEDESTAL_HEIGHT = 0.52;
 const COBOT_BASE_PIVOT_Y = COBOT_PEDESTAL_HEIGHT;
 const COBOT_MOUNT_REACH_OFFSET = COBOT_BASE_PIVOT_Y + 0.05;
-const IK_BASE_CLEARANCE_RADIUS = 0.42;
+const IK_BASE_CLEARANCE_RADIUS = 0.55;
 const IK_SHOULDER_MIN = -1.6;
 const IK_SHOULDER_MAX = 1.4;
 const IK_ELBOW_MIN = -0.2;
@@ -92,25 +92,20 @@ function topOfPileAt(x: number, z: number, baseY: number, ignoreItem?: SimItem |
 }
 
 function itemFootprintHit(item: PlacedItem, x: number, z: number, pad = 0.0): boolean {
+    if (item.type === 'camera') return false;
     const dx = Math.abs(x - item.position[0]);
     const dz = Math.abs(z - item.position[2]);
-    if (item.type === 'camera') return false;
-    if (item.type === 'table') {
-        const [w, d] = item.config?.tableSize || [1.8, 1.8];
-        return dx <= w / 2 && dz <= d / 2;
-    }
-    if (item.type === 'belt') {
-        const [w, d] = item.config?.beltSize || [2, 2];
-        return dx <= w / 2 && dz <= d / 2;
-    }
-    if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) {
-        const [w, d] = item.config?.machineSize || [2, 2];
-        return dx <= w / 2 && dz <= d / 2;
-    }
-    if (item.type === 'cobot') {
-        return dx <= COBOT_PLATFORM_W / 2 && dz <= COBOT_PLATFORM_D / 2;
-    }
-    return dx <= 1 && dz <= 1;
+    const isRotated = (item.rotation || 0) % 2 !== 0;
+    const lx = isRotated ? dz : dx;
+    const lz = isRotated ? dx : dz;
+
+    let w = 2, d = 2;
+    if (item.type === 'table') [w, d] = item.config?.tableSize || [1.8, 1.8];
+    else if (item.type === 'belt') [w, d] = item.config?.beltSize || [2, 2];
+    else if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) [w, d] = item.config?.machineSize || [2, 2];
+    else if (item.type === 'cobot') { w = COBOT_PLATFORM_W; d = COBOT_PLATFORM_D; }
+    
+    return lx <= w / 2 + pad && lz <= d / 2 + pad;
 }
 
 function machineTopY(item: PlacedItem): number {
@@ -274,8 +269,8 @@ function getOrganizedDropTarget(
     if (!grabbedOrHint) return null;
     const gridW = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[0] || 3)));
     const gridD = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[1] || 3)));
-    const sizeW = container.config?.machineSize?.[0] || container.config?.tableSize?.[0] || 2;
-    const sizeD = container.config?.machineSize?.[1] || container.config?.tableSize?.[1] || 2;
+    const sizeW = container.config?.machineSize?.[0] || container.config?.tableSize?.[0] || (container.type === 'table' ? 1.8 : 2);
+    const sizeD = container.config?.machineSize?.[1] || container.config?.tableSize?.[1] || (container.type === 'table' ? 1.8 : 2);
 
     const rotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][container.rotation] ?? 0;
     const slots: Vector3[] = [];
@@ -359,7 +354,7 @@ function getSelfPlatformDropTarget(
 ): Vector3 | null {
     const grabbedOrHint = itemHint ?? (state.grabbedItem ? { color: state.grabbedItem.color, size: state.grabbedItem.size } : null);
     if (!grabbedOrHint || state.stackSlots.length === 0) return null;
-    const stackRadius = 0.24;
+    const stackRadius = 0.28;
     const itemColor = grabbedOrHint.color;
     const itemSize = grabbedOrHint.size;
     const ignored = ignoreItem ?? state.grabbedItem;
@@ -448,8 +443,8 @@ function currentDropTarget(state: CobotState): Vector3 | null {
     
     const container = state.obstacles.find(o => 
         ['pile', 'table', 'receiver', 'indexed_receiver'].includes(o.type) && 
-        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || o.config?.tableSize?.[0] || 2) / 2 && 
-        Math.abs(o.position[2] - step.pos![2]) < (o.config?.machineSize?.[1] || o.config?.tableSize?.[1] || 2) / 2
+        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || o.config?.tableSize?.[0] || (o.type === 'table' ? 1.8 : 2)) / 2 && 
+        Math.abs(o.position[2] - step.pos![2]) < (o.config?.machineSize?.[1] || o.config?.tableSize?.[1] || (o.type === 'table' ? 1.8 : 2)) / 2
     );
 
     const sortColor = step.sortColor !== false;
@@ -461,7 +456,7 @@ function currentDropTarget(state: CobotState): Vector3 | null {
         return selfTarget;
     }
 
-    if (container && (sortColor || sortSize)) {
+    if (container) {
         const orgTarget = getOrganizedDropTarget(state, container, sortColor, sortSize);
         if (orgTarget) return orgTarget;
 
@@ -508,7 +503,6 @@ function segmentHitsMachine(a: Vector3, b: Vector3, obstacle: PlacedItem, radius
 }
 
 function armHitsObstacle(state: CobotState, obstacles: PlacedItem[]): PlacedItem | null {
-    return null; // Disabled per user request
     state.mountBase.computeWorldMatrix(true);
     state.shoulder.computeWorldMatrix(true);
     state.elbow.computeWorldMatrix(true);
@@ -531,26 +525,38 @@ function armHitsObstacle(state: CobotState, obstacles: PlacedItem[]): PlacedItem
     ];
     const isAllowedPickContact = state.phase === 'pick_hover' || state.phase === 'pick_descend' || state.phase === 'pick_attach';
     const pickContact = isAllowedPickContact ? pickupContactState(state, state.targetedItem) : null;
+    const isAllowedDropContact = state.phase === 'hover_drop' || state.phase === 'descend_drop' || state.phase === 'release';
+    const dropTarget = isAllowedDropContact ? currentDropTarget(state) : null;
 
     for (const obstacle of obstacles) {
         const isActivePickSupport = !!pickContact?.targetPos && itemFootprintHit(obstacle, pickContact.targetPos.x, pickContact.targetPos.z, 0.08);
+        const isActiveDropSupport = !!dropTarget && itemFootprintHit(obstacle, dropTarget.x, dropTarget.z, 0.08);
+        
+        // If the arm is actively picking/dropping from this machine, allow all links to safely enter its bounds
+        if (isActivePickSupport || isActiveDropSupport) continue;
+
         for (const [index, [a, b, radius]] of links.entries()) {
-            if (isActivePickSupport && index >= 2) {
-                const target = pickContact!.targetPos!;
-                const mid = Vector3.Lerp(a, b, 0.5);
-                const dx = mid.x - target.x;
-                const dz = mid.z - target.z;
-                const supportClearance = machineTopY(obstacle) + PICK_SUPPORT_CLEARANCE;
-                if (Math.sqrt(dx * dx + dz * dz) < 0.62 && Math.min(a.y, b.y) > supportClearance) continue;
-            }
             if (segmentHitsMachine(a, b, obstacle, radius)) return obstacle;
+        }
+    }
+    // Self-collision with own pedestal base
+    if (state.selfItem) {
+        for (const [index, [a, b, radius]] of links.entries()) {
+            if (index <= 1) continue; // Shoulder links originate from base
+            const samples = 8;
+            for (let i = 0; i <= samples; i++) {
+                const p = Vector3.Lerp(a, b, i / samples);
+                if (p.y > COBOT_PEDESTAL_HEIGHT + radius) continue;
+                const dx = p.x - state.position[0];
+                const dz = p.z - state.position[2];
+                if (Math.sqrt(dx * dx + dz * dz) < 0.32 + radius) return state.selfItem;
+            }
         }
     }
     return null;
 }
 
 function enterCollisionRecovery(state: CobotState) {
-    return; // Disabled per user request
     state.safetyStopped = true;
     state.recoveryTimer = 0;
     state.ikTarget.copyFrom(state.lastSafeIkTarget);
@@ -780,40 +786,51 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     mountBase.parent = root;
     mountBase.position = new Vector3(mountLocalX, COBOT_PLATFORM_TOP_Y, mountLocalZ);
 
-    // Pedestal / turret base sized to one grid cell and lifted higher
-    cyl('pedestal', pedestalRadius, COBOT_PEDESTAL_HEIGHT, new Vector3(0, COBOT_PEDESTAL_HEIGHT / 2, 0), amrEdge, scene, mountBase);
+    // Pedestal / turret base sized to one grid cell (1/9 of platform) and tapered
+    const pedestal = MeshBuilder.CreateCylinder('pedestal', { 
+        diameterBottom: 0.64, 
+        diameterTop: pedestalRadius * 2, 
+        height: COBOT_PEDESTAL_HEIGHT, 
+        tessellation: 32 
+    }, scene);
+    pedestal.position = new Vector3(0, COBOT_PEDESTAL_HEIGHT / 2, 0);
+    pedestal.material = amrEdge;
+    pedestal.parent = mountBase;
 
     const basePivot = new TransformNode('basePivot', scene);
     basePivot.parent = mountBase;
     basePivot.position.y = COBOT_BASE_PIVOT_Y;
     cyl('baseRing', baseRingRadius, 0.075, new Vector3(0, 0.01, 0), jointMat, scene, basePivot);
 
-    // ── LINK 1 — upper arm ────────────────────────────────────────────────
+    // ── LINK 1 — upper arm (offset laterally to allow folding) ────────────
     const shoulder = new TransformNode('shoulder', scene);
     shoulder.parent = basePivot;
     shoulder.position.y = 0.04;
-    sph('j0', 0.3,  Vector3.Zero(), jointMat, scene, shoulder);
-    cyl('link1', 0.145, 1.32, new Vector3(0, 0.68, 0), linkMat, scene, shoulder);
+    const j0 = cyl('j0', 0.22, 0.44, new Vector3(0.18, 0, 0), jointMat, scene, shoulder);
+    j0.rotation.z = Math.PI / 2;
+    cyl('link1', 0.175, 1.76, new Vector3(0.32, 0.88, 0), linkMat, scene, shoulder);
 
-    // ── LINK 2 — forearm ──────────────────────────────────────────────────
+    // ── LINK 2 — forearm (centered, bypassing link1) ──────────────────────
     const elbow = new TransformNode('elbow', scene);
     elbow.parent = shoulder;
-    elbow.position.y = 1.35;
-    sph('j1', 0.26, Vector3.Zero(), jointMat, scene, elbow);
-    cyl('link2', 0.12, 0.97, new Vector3(0, 0.5, 0), linkMat, scene, elbow);
+    elbow.position.y = 1.80;
+    const j1 = cyl('j1', 0.17, 0.44, new Vector3(0.16, 0, 0), jointMat, scene, elbow);
+    j1.rotation.z = Math.PI / 2;
+    cyl('link2', 0.13, 1.25, new Vector3(0, 0.625, 0), linkMat, scene, elbow);
 
     // ── LINK 3 — wrist tube ───────────────────────────────────────────────
     const wrist = new TransformNode('wrist', scene);
     wrist.parent = elbow;
-    wrist.position.y = 1.0;
-    sph('j2', 0.21, Vector3.Zero(), jointMat, scene, wrist);
+    wrist.position.y = 1.30;
+    const j2 = cyl('j2', 0.13, 0.30, Vector3.Zero(), jointMat, scene, wrist);
+    j2.rotation.z = Math.PI / 2;
     cyl('link3', 0.1, 0.45, new Vector3(0, 0.225, 0), linkMat, scene, wrist);
 
     // ── WRIST ROLL ────────────────────────────────────────────────────────
     const wristRoll = new TransformNode('wristRoll', scene);
     wristRoll.parent = wrist;
     wristRoll.position.y = 0.45;
-    sph('j3', 0.18, Vector3.Zero(), jointMat, scene, wristRoll);
+    cyl('j3', 0.11, 0.26, Vector3.Zero(), jointMat, scene, wristRoll);
 
     // ── HAND PITCH (Extra joint) ──────────────────────────────────────────
     cyl('handLink', 0.08, 0.05, new Vector3(0, 0.025, 0), linkMat, scene, wristRoll);
@@ -821,7 +838,8 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     const handPitch = new TransformNode('handPitch', scene);
     handPitch.parent = wristRoll;
     handPitch.position.y = 0.05;
-    sph('j4', 0.16, Vector3.Zero(), jointMat, scene, handPitch);
+    const j4 = cyl('j4', 0.09, 0.22, Vector3.Zero(), jointMat, scene, handPitch);
+    j4.rotation.z = Math.PI / 2;
 
     // Suction nozzle
     cyl('nozzle', 0.045, 0.2, new Vector3(0, 0.1, 0), gripMat, scene, handPitch);
@@ -850,8 +868,8 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     mat.alpha = 0; // invisible logic sphere
     
     const collisionSphere = MeshBuilder.CreateSphere(`collision_${item.id}`, { diameter: 1.0, segments: 16 }, scene);
-    collisionSphere.parent = wristRoll;
-    collisionSphere.position.set(0, 0.1, 0); // centered on wrist
+    collisionSphere.parent = wrist;
+    collisionSphere.position.set(0, 0.55, 0); // centered higher on wrist since wrist is higher than wristRoll
     collisionSphere.material = mat;
     collisionSphere.isPickable = false;
 
@@ -871,9 +889,10 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         
         const camMesh = MeshBuilder.CreateSphere(`camMesh_${item.id}_${i}`, { diameter: 0.04, segments: 8 }, scene);
         camMesh.material = camMat;
-        camMesh.parent = wristRoll;
+        camMesh.parent = wrist;
         
-        camMesh.position.set(sensorOffsets[i][0], sensorOffsets[i][1], sensorOffsets[i][2]);
+        // wristRoll is at y=0.45 relative to wrist. Add 0.45 so they stay at the same visual height as before.
+        camMesh.position.set(sensorOffsets[i][0], sensorOffsets[i][1] + 0.45, sensorOffsets[i][2]);
         sensorLights.push(camMesh);
     }
 
@@ -1072,8 +1091,8 @@ function findItemToOrganize(state: CobotState) {
 }
 
 export function tickCobot(state: CobotState, delta: number, isRunning: boolean): boolean {
-    const L1 = 1.35;
-    const L2 = 1.0;
+    const L1 = 1.80;
+    const L2 = 1.30;
     const L3 = 0.715; // Exact distance from wrist to gripperTip (0.45 + 0.05 + 0.215)
     state.simTime += delta;
 
@@ -1384,10 +1403,6 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     state.phase = state.grabbedItem ? 'idle' : 'next';
                     break;
                 }
-                if (supportTopAt(tgt.x, tgt.z, dropObstacles(state)) <= DISC_H / 2 + 0.01) {
-                    state.safetyStopped = true;
-                    break;
-                }
                 const travelY = carryTravelY(state, tgt);
                 state.desiredTarget.set(tgt.x, travelY, tgt.z);
                 if (reached) {
@@ -1593,13 +1608,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     // Check loose items for sensor awareness.
     for (const item of simState.items) {
             if (item === state.grabbedItem) continue;
-            if (
-                state.selfItem &&
-                itemFootprintHit(state.selfItem, item.pos.x, item.pos.z, 0.02) &&
-                item.pos.y <= machineTopY(state.selfItem) + DISC_H * 8
-            ) {
-                continue;
-            }
+            if (item === state.targetedItem && distanceToTarget < 0.6) continue;
             const otherRad = partRadiusForSize(item.size);
             
             const dy = clamp(wristPos.y, item.pos.y, item.pos.y + DISC_H);
@@ -1645,8 +1654,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         // Strict clamp to prevent pushing through floor
         state.desiredTarget.y = Math.max(state.desiredTarget.y, state.position[1] + 0.1);
     }
+    if (state.recoveryTimer > 0) {
+        state.recoveryTimer = Math.max(0, state.recoveryTimer - delta);
+    }
 
-    const cruiseSpeed = (precisePhase ? 2.8 : 5.8) * state.speed;
+    const cruiseSpeed = (state.recoveryTimer > 0 ? 0.8 : (precisePhase ? 2.8 : 5.8)) * state.speed;
     const settleRadius = precisePhase ? 0.2 : 0.5;
     const accel = (precisePhase ? 8.0 : 5.5) * state.speed;
     const damping = Math.min(1, (precisePhase ? 6.6 : 4.8) * delta);
@@ -1685,6 +1697,18 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.ikVelocity.setAll(0);
     } else {
         state.ikTarget.addInPlace(step);
+    }
+
+    // --- Singularity Avoidance: Prevent IK target from passing exactly through the base column ---
+    // This creates a smooth 180-degree sweep around the base rather than a chaotic self-intersecting snap!
+    const cx = state.ikTarget.x - mountPos.x;
+    const cz = state.ikTarget.z - mountPos.z;
+    const cDist = Math.sqrt(cx * cx + cz * cz);
+    const minC = IK_BASE_CLEARANCE_RADIUS + 0.05;
+    if (cDist < minC && cDist > 0.001) {
+        const push = minC - cDist;
+        state.ikTarget.x += (cx / cDist) * push;
+        state.ikTarget.z += (cz / cDist) * push;
     }
 
     // ── 2-link IK (verified against kyn.js) ──────────────────────────────

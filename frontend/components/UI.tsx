@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
 import { simState } from '../simState';
@@ -498,23 +498,26 @@ export const UI: React.FC = () => {
                             className="rounded border-gray-600 bg-gray-800"
                         />
                     </label>
-                    <div className="flex gap-2">
-                        <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-6 py-3 shadow-xl border border-gray-700 flex items-center gap-4">
-                        <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-8 h-8 flex items-center justify-center font-bold text-lg">
+                    <div className="flex gap-1.5 sm:gap-2">
+                        <button onClick={() => setShowHelpModal(true)} className="bg-gray-900/90 backdrop-blur-md rounded-xl w-10 sm:w-12 shadow-xl border border-gray-700 flex items-center justify-center hover:bg-gray-800 transition-colors text-blue-400" title="Help / Instructions">
+                            <HelpCircle size={20} className="sm:w-6 sm:h-6" />
+                        </button>
+                        <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
+                        <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
                             ★
                         </div>
                         <div>
-                            <div className="text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
-                            <div className="text-2xl font-black text-white leading-none">{score}</div>
+                            <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
+                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{score}</div>
                         </div>
                     </div>
-                    <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-6 py-3 shadow-xl border border-gray-700 flex items-center gap-4">
-                        <div className="bg-blue-500/20 text-blue-400 rounded-md w-8 h-8 flex items-center justify-center font-bold text-lg">
+                    <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
+                        <div className="bg-blue-500/20 text-blue-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
                             $
                         </div>
                         <div>
-                            <div className="text-[10px] font-bold text-gray-500 tracking-widest uppercase">Credits</div>
-                            <div className="text-2xl font-black text-white leading-none">{credits}</div>
+                            <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Credits</div>
+                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{credits}</div>
                         </div>
                     </div>
                 </div>
@@ -735,10 +738,10 @@ export const UI: React.FC = () => {
                                                                 </button>
                                                             </div>
                                                         )}
-                                                        <div className="rounded-lg overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-fuchsia-950/20">
+                                                        <div className="rounded-lg overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-gray-900/50">
                                                             <button
-                                                                onClick={() => setShowTransforms(v => !v)}
-                                                                className={`w-full flex items-center justify-between px-2 py-1.5 text-left bg-fuchsia-900/25 hover:bg-fuchsia-800/35 transition-colors ${showTransforms ? 'border-b border-fuchsia-500/30' : ''}`}
+                                                                onClick={() => setShowTransforms(!showTransforms)}
+                                                                className={`w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-fuchsia-900/20 transition-colors ${showTransforms ? 'bg-fuchsia-900/20' : ''}`}
                                                             >
                                                                 <div className="flex items-center gap-2">
                                                                     <SlidersHorizontal size={14} className="text-fuchsia-300" />
@@ -752,7 +755,7 @@ export const UI: React.FC = () => {
 
                                                                     <div className="flex gap-2 w-full mt-1">
                                                                         <div className="flex flex-col gap-0.5 w-1/2">
-                                                                            <span className="text-[9px] font-bold text-gray-500">STACK GRID (WxD)</span>
+                                                                            <span className="text-[9px] font-bold text-gray-500">STACK GRID <span className="font-normal text-gray-600">({((selectedItem.config?.stackMatrix?.[0] || 3) * (selectedItem.config?.stackMatrix?.[1] || 3)) - 1} slots)</span></span>
                                                                             <div className="flex items-center gap-1">
                                                                                 <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 3] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
                                                                                 <span className="text-gray-500 text-[10px]">x</span>
@@ -1181,8 +1184,8 @@ export const UI: React.FC = () => {
                                     />
                                     <div className="flex gap-1">
                                         <button onClick={resetFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
-                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v9', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
-                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v10', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
+                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v10') || localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
                                     </div>
                                 </div>
                             </div>
@@ -1323,11 +1326,15 @@ export const UI: React.FC = () => {
                                                                 key={c.value}
                                                                 title={c.label}
                                                                 onClick={() => {
-                                                                    // Left-click = set as default color
-                                                                    patchActiveTemplate({ color: c.value });
+                                                                    if (activeTemplate.color !== c.value) {
+                                                                        patchActiveTemplate({ color: c.value });
+                                                                    } else {
+                                                                        const cur = activeTemplate.spawnColors ?? [];
+                                                                        const next = inMulti ? cur.filter(x => x !== c.value) : [...cur, c.value];
+                                                                        patchActiveTemplate({ spawnColors: next });
+                                                                    }
                                                                 }}
                                                                 onContextMenu={(e) => {
-                                                                    // Right-click = toggle in spawnColors list
                                                                     e.preventDefault();
                                                                     const cur = activeTemplate.spawnColors ?? [];
                                                                     const next = inMulti ? cur.filter(x => x !== c.value) : [...cur, c.value];
@@ -1344,7 +1351,7 @@ export const UI: React.FC = () => {
                                                 <div className="flex items-center gap-2">
                                                     <input type="color" value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="h-7 w-9 rounded border border-slate-700 bg-slate-900 p-0.5 cursor-pointer" />
                                                     <input value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono w-24 outline-none focus:border-cyan-500" />
-                                                    <span className="text-[10px] text-slate-500">Click=default · Right-click=add to random pool</span>
+                                                    <span className="text-[10px] text-slate-500">Click=default · Click again=add to random pool</span>
                                                 </div>
                                             </div>
 
@@ -1358,7 +1365,14 @@ export const UI: React.FC = () => {
                                                         return (
                                                             <button
                                                                 key={size}
-                                                                onClick={() => patchActiveTemplate({ size })}
+                                                                onClick={() => {
+                                                                    if (activeTemplate.size !== size) {
+                                                                        patchActiveTemplate({ size });
+                                                                    } else {
+                                                                        const cur = activeTemplate.spawnSizes ?? [];
+                                                                        patchActiveTemplate({ spawnSizes: inMulti ? cur.filter(x => x !== size) : [...cur, size] });
+                                                                    }
+                                                                }}
                                                                 onContextMenu={(e) => {
                                                                     e.preventDefault();
                                                                     const cur = activeTemplate.spawnSizes ?? [];
@@ -1372,7 +1386,7 @@ export const UI: React.FC = () => {
                                                         );
                                                     })}
                                                 </div>
-                                                <p className="text-[10px] text-slate-500">Click=default · Right-click=add to random pool</p>
+                                                <p className="text-[10px] text-slate-500">Click=default · Click again=add to random pool</p>
                                             </div>
 
                                             {/* ─── Fine-tune sliders ─── */}

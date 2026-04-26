@@ -166,7 +166,7 @@ export const BabylonScene: React.FC = () => {
                     const pos = gizmoManager.attachedNode.position;
                     const itemToMove = st.placedItems.find(i => i.id === st.moveModeItemId);
                     if (itemToMove) {
-                        const snapStep = itemToMove.type === 'camera' ? 0.5 : 2;
+                        const snapStep = itemToMove.type === 'camera' ? 0.5 : 2.5;
                         const gx = Math.round(pos.x / snapStep) * snapStep;
                         const gz = Math.round(pos.z / snapStep) * snapStep;
                         
@@ -210,10 +210,10 @@ export const BabylonScene: React.FC = () => {
         gridMat.metallic = 0;
         gridMat.roughness = 1;
         for (let i = -10; i <= 10; i++) {
-            const lx = MeshBuilder.CreateBox(`gx${i}`, { width: 40, height: 0.01, depth: 0.03 }, scene);
-            lx.position.z = i * 2; lx.material = gridMat; lx.isPickable = false;
-            const lz = MeshBuilder.CreateBox(`gz${i}`, { width: 0.03, height: 0.01, depth: 40 }, scene);
-            lz.position.x = i * 2; lz.material = gridMat; lz.isPickable = false;
+            const lx = MeshBuilder.CreateBox(`gx${i}`, { width: 50, height: 0.01, depth: 0.03 }, scene);
+            lx.position.z = i * 2.5; lx.material = gridMat; lx.isPickable = false;
+            const lz = MeshBuilder.CreateBox(`gz${i}`, { width: 0.03, height: 0.01, depth: 50 }, scene);
+            lz.position.x = i * 2.5; lz.material = gridMat; lz.isPickable = false;
         }
 
         // ── PHYSICS (ground only, parts use manual simulation) ───────────────
@@ -358,6 +358,19 @@ export const BabylonScene: React.FC = () => {
                 const itm = placedItems.find(i => i.id === id);
                 if (itm) {
                     cState.selfItem = itm;
+                    if (itm.config?.triggerUnlock && (cState as any).lastUnlockTime !== itm.config.triggerUnlock) {
+                        (cState as any).lastUnlockTime = itm.config.triggerUnlock;
+                        cState.safetyStopped = false;
+                        cState.phase = 'idle';
+                        if (cState.grabbedItem) {
+                            cState.grabbedItem.state = 'free';
+                            cState.grabbedItem = null;
+                        }
+                        cState.targetedItem = null;
+                        cState.blockedTimer = 0;
+                        cState.targetTimer = 0;
+                        cState.desiredTarget.copyFrom(cState.idleTarget);
+                    }
                     if (!itm.config?.collisionStopped) cState.safetyStopped = false;
                     cState.program = itm.config?.program || [];
                     cState.speed = itm.config?.speed || 1.0;
@@ -567,7 +580,7 @@ export const BabylonScene: React.FC = () => {
                     m => m.name === 'floorVisual');
                 if (!pick?.hit || !pick.pickedPoint) { cursorMesh.isVisible = false; return; }
 
-                const snapStep = (st.buildMode === 'camera' || (st.moveModeItemId && st.placedItems.find(i => i.id === st.moveModeItemId)?.type === 'camera')) ? 0.5 : 2;
+                const snapStep = (st.buildMode === 'camera' || (st.moveModeItemId && st.placedItems.find(i => i.id === st.moveModeItemId)?.type === 'camera')) ? 0.5 : 2.5;
                 const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
                 const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
 
@@ -670,7 +683,7 @@ export const BabylonScene: React.FC = () => {
                     const pick = scene.pick(scene.pointerX, scene.pointerY,
                         m => m.name === 'floorVisual');
                     if (!pick?.hit || !pick.pickedPoint) return;
-                    const snapStep = st2.buildMode === 'camera' ? 0.5 : 2;
+                    const snapStep = st2.buildMode === 'camera' ? 0.5 : 2.5;
                     const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
                     const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
                     
@@ -705,7 +718,7 @@ export const BabylonScene: React.FC = () => {
                     if (pick?.hit && pick.pickedPoint) {
                         const itemToMove = st2.placedItems.find(i => i.id === st2.moveModeItemId);
                         if (itemToMove) {
-                            const snapStep = itemToMove.type === 'camera' ? 0.5 : 2;
+                            const snapStep = itemToMove.type === 'camera' ? 0.5 : 2.5;
                             const gx = Math.round(pick.pickedPoint.x / snapStep) * snapStep;
                             const gz = Math.round(pick.pickedPoint.z / snapStep) * snapStep;
                             
@@ -879,7 +892,7 @@ export const BabylonScene: React.FC = () => {
                     if (node) {
                         const targetItem = placedItems.find(i => i.id === moveModeItemId);
                         if (gizmoManager.gizmos.positionGizmo && targetItem) {
-                            gizmoManager.gizmos.positionGizmo.snapDistance = targetItem.type === 'camera' ? 0.5 : 2;
+                            gizmoManager.gizmos.positionGizmo.snapDistance = targetItem.type === 'camera' ? 0.5 : 2.5;
                         }
                         gizmoManager.attachToMesh(node as AbstractMesh);
                     }
@@ -1040,8 +1053,8 @@ export const BabylonScene: React.FC = () => {
                     // ── Manual gravity ────────────────────────────────────
                     let vy = velY.get(index) ?? 0;
 
-                    const gx = Math.round(simItem.pos.x / 2) * 2;
-                    const gz = Math.round(simItem.pos.z / 2) * 2;
+                    const gx = Math.round(simItem.pos.x / 2.5) * 2.5;
+                    const gz = Math.round(simItem.pos.z / 2.5) * 2.5;
                     const tile = placedItems.find(item =>
                         Math.abs(item.position[0] - gx) < 0.1 && Math.abs(item.position[2] - gz) < 0.1
                     );
@@ -1128,8 +1141,8 @@ export const BabylonScene: React.FC = () => {
             const isRepellable = (item: typeof items[0]) => {
                 if (item.state !== 'free') return false;
                 if (item.pos.y > 0.65) return false;
-                const gx = Math.round(item.pos.x / 2) * 2;
-                const gz = Math.round(item.pos.z / 2) * 2;
+                const gx = Math.round(item.pos.x / 2.5) * 2.5;
+                const gz = Math.round(item.pos.z / 2.5) * 2.5;
                 const tile = placedItems.find(p => Math.abs(p.position[0] - gx) < 0.1 && Math.abs(p.position[2] - gz) < 0.1);
                 return !tile || tile.type === 'belt' || tile.type === 'sender';
             };

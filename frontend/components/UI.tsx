@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move } from 'lucide-react';
 import { useFactoryStore } from '../store';
-import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep } from '../types';
+import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
 import { simState } from '../simState';
 import { PartPreview3D } from './PartPreview3D';
 
@@ -421,7 +421,7 @@ export const UI: React.FC = () => {
 
     const unlockSelectedCobot = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
-        updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, collisionStopped: false } });
+        updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, collisionStopped: false, triggerUnlock: Date.now() } });
     };
 
     const patchMachineSize = (axis: 0 | 1, value: number) => {
@@ -588,10 +588,10 @@ export const UI: React.FC = () => {
                                 {selectedItem.type === 'cobot' && (
                                     <button 
                                         onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, isStopped: !selectedItem.config?.isStopped } })}
-                                        className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-red-400 hover:bg-red-500/20' : 'text-emerald-400 hover:bg-emerald-500/20'}`}
+                                        className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
                                         title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
                                     >
-                                        {selectedItem.config?.isStopped ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+                                        {selectedItem.config?.isStopped ? <Play size={16} fill="currentColor" /> : <Square size={16} fill="currentColor" />}
                                     </button>
                                 )}
                                 <button onClick={() => setSelectedItemId(null)} className="text-gray-400 hover:text-white">

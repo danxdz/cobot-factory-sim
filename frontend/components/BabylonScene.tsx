@@ -9,7 +9,7 @@ import {
 import HavokPhysics from '@babylonjs/havok';
 import { factoryStore } from '../store';
 import { simState } from '../simState';
-import { MachineRuntimeState, PartSize, PartTemplate, PlacedItem } from '../types';
+import { MachineRuntimeState, PartShape, PartSize, PartTemplate, PlacedItem } from '../types';
 import {
     createBelt, createSender, createReceiver, createIndexedReceiver,
     createPile, createTable, createCameraEntity, createPartMesh
@@ -19,8 +19,6 @@ import { createCobot, tickCobot, CobotState } from '../babylon/cobotMesh';
 const ITEM_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const ITEM_SIZES: PartSize[] = ['small', 'medium', 'large'];
 const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
-const DISC_H = 0.015;
-const DISC_HALF_H = DISC_H / 2;
 const DISC_RADIUS = SIZE_DIAMETER.large / 2;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
@@ -29,6 +27,9 @@ const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
 const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_MOUNT_RANGE_Y = 1.58;
+const SHAPE_BASE_DIAMETER: Record<PartShape, number> = { disc: 0.6, can: 0.56, box: 0.56, pyramid: 0.62 };
+const SHAPE_BASE_HEIGHT: Record<PartShape, number> = { disc: 0.025, can: 0.08, box: 0.08, pyramid: 0.1 };
+const DEFAULT_PART_HALF = SHAPE_BASE_HEIGHT.disc / 2;
 const FALLBACK_PART_TEMPLATE: PartTemplate = {
     id: 'fallback_disc',
     name: 'Disk',
@@ -50,8 +51,29 @@ function randomPartSize(): PartSize {
     return ITEM_SIZES[Math.floor(Math.random() * ITEM_SIZES.length)];
 }
 
-function partRadius(size: PartSize): number {
-    return SIZE_DIAMETER[size] / 2;
+function partShape(spec: { shape?: PartShape }): PartShape {
+    return spec.shape ?? 'disc';
+}
+
+function partScaleXZ(spec: { size: PartSize; radiusScale?: number }): number {
+    return (SIZE_DIAMETER[spec.size] / 0.6) * (spec.radiusScale ?? 1);
+}
+
+function partHalfHeight(spec: { shape?: PartShape; heightScale?: number }): number {
+    return (SHAPE_BASE_HEIGHT[partShape(spec)] ?? SHAPE_BASE_HEIGHT.disc) * (spec.heightScale ?? 1) / 2;
+}
+
+function partRadius(spec: { size: PartSize; shape?: PartShape; radiusScale?: number; scaleX?: number; scaleZ?: number }): number {
+    const shape = partShape(spec);
+    const xScale = partScaleXZ(spec) * (spec.scaleX ?? 1);
+    const zScale = partScaleXZ(spec) * (spec.scaleZ ?? 1);
+    if (shape === 'box') {
+        const halfW = (SHAPE_BASE_DIAMETER.box / 2) * xScale;
+        const halfD = (SHAPE_BASE_DIAMETER.box / 2) * zScale;
+        return Math.sqrt(halfW * halfW + halfD * halfD);
+    }
+    const baseR = (SHAPE_BASE_DIAMETER[shape] ?? SHAPE_BASE_DIAMETER.disc) / 2;
+    return baseR * Math.max(xScale, zScale);
 }
 
 function partMeshKeyFor(item: {
@@ -173,7 +195,7 @@ export const BabylonScene: React.FC = () => {
                         let gy = itemToMove.position[1];
                         if (itemToMove.type === 'camera') {
                             const topY = getSupportSurfaceY(gx, gz, st.placedItems);
-                            gy = topY === DISC_HALF_H ? 0 : topY;
+                            gy = topY <= DEFAULT_PART_HALF + 0.0001 ? 0 : topY;
                         }
 
                         const occupied = itemToMove.type !== 'camera' && st.placedItems.some(i =>
@@ -581,7 +603,7 @@ export const BabylonScene: React.FC = () => {
                     let gy = 0;
                     if (st.buildMode === 'camera') {
                         const topY = getSupportSurfaceY(gx, gz, st.placedItems);
-                        gy = topY === DISC_HALF_H ? 0 : topY;
+                        gy = topY <= DEFAULT_PART_HALF + 0.0001 ? 0 : topY;
                     }
 
                     cursorMesh.isVisible = true;
@@ -683,7 +705,7 @@ export const BabylonScene: React.FC = () => {
                     let gy = 0;
                     if (st2.buildMode === 'camera') {
                         const topY = getSupportSurfaceY(gx, gz, st2.placedItems);
-                        gy = topY === DISC_HALF_H ? 0 : topY;
+                        gy = topY <= DEFAULT_PART_HALF + 0.0001 ? 0 : topY;
                     }
                     
                     // Cameras are pole-mounted — they can share a tile with other entities
@@ -718,7 +740,7 @@ export const BabylonScene: React.FC = () => {
                             let gy = itemToMove.position[1];
                             if (itemToMove.type === 'camera') {
                                 const topY = getSupportSurfaceY(gx, gz, st2.placedItems);
-                                gy = topY === DISC_HALF_H ? 0 : topY;
+                                gy = topY <= DEFAULT_PART_HALF + 0.0001 ? 0 : topY;
                             }
 
                             const occupied = itemToMove.type !== 'camera' && st2.placedItems.some(i =>
@@ -767,13 +789,21 @@ export const BabylonScene: React.FC = () => {
             return map;
         }
 
-        function itemSurfaceCenterY(item: PlacedItem): number {
-            if (item.type === 'belt') return (item.config?.beltHeight || TILE_CENTER_Y) + DISC_HALF_H + 0.018;
-            if (['sender','receiver','indexed_receiver'].includes(item.type)) return (item.config?.machineHeight || TILE_CENTER_Y) + DISC_HALF_H + 0.012;
-            if (item.type === 'pile') return (item.config?.machineHeight || 0.7) + DISC_HALF_H + 0.012;
-            if (item.type === 'table') return (item.config?.tableHeight || TABLE_CENTER_Y) + DISC_HALF_H + 0.014;
-            if (item.type === 'cobot') return COBOT_PLATFORM_CENTER_Y;
-            return DISC_HALF_H;
+        function itemSupportTopY(item: PlacedItem): number {
+            if (item.type === 'belt') return item.config?.beltHeight || TILE_CENTER_Y;
+            if (['sender', 'receiver', 'indexed_receiver'].includes(item.type)) return item.config?.machineHeight || TILE_CENTER_Y;
+            if (item.type === 'pile') return item.config?.machineHeight || 0.7;
+            if (item.type === 'table') return item.config?.tableHeight || TABLE_CENTER_Y;
+            if (item.type === 'cobot') return COBOT_PLATFORM_CENTER_Y - DEFAULT_PART_HALF;
+            return 0;
+        }
+
+        function itemSurfaceCenterY(
+            item: PlacedItem,
+            part?: { shape?: PartShape; size?: PartSize; radiusScale?: number; heightScale?: number; scaleX?: number; scaleZ?: number }
+        ): number {
+            const half = partHalfHeight({ shape: part?.shape, heightScale: part?.heightScale });
+            return itemSupportTopY(item) + half;
         }
 
         function itemSupportsPart(item: PlacedItem, x: number, z: number, radius = DISC_RADIUS): boolean {
@@ -793,11 +823,17 @@ export const BabylonScene: React.FC = () => {
             return lx <= w / 2 && lz <= d / 2;
         }
 
-        function getSupportSurfaceY(x: number, z: number, placedItems: PlacedItem[]): number {
-            let surfaceY = DISC_HALF_H;
+        function getSupportSurfaceY(
+            x: number,
+            z: number,
+            placedItems: PlacedItem[],
+            part?: { shape?: PartShape; size?: PartSize; radiusScale?: number; heightScale?: number; scaleX?: number; scaleZ?: number }
+        ): number {
+            const half = partHalfHeight({ shape: part?.shape, heightScale: part?.heightScale });
+            let surfaceY = half;
             for (const item of placedItems) {
                 if (!itemSupportsPart(item, x, z)) continue;
-                surfaceY = Math.max(surfaceY, itemSurfaceCenterY(item));
+                surfaceY = Math.max(surfaceY, itemSurfaceCenterY(item, part));
             }
             return surfaceY;
         }
@@ -838,7 +874,7 @@ export const BabylonScene: React.FC = () => {
                     if (planarDist > 1.65) continue;
                     const centered = Math.max(0, 1 - planarDist / 1.65);
                     const crowdPenalty = Math.min(0.45, nearbyVisionCrowding(item.id, item.pos.x, item.pos.z) * 0.18);
-                    const supportPenalty = Math.abs(getSupportSurfaceY(item.pos.x, item.pos.z, placedItems) - item.pos.y) > 0.05 ? 0.2 : 0;
+                    const supportPenalty = Math.abs(getSupportSurfaceY(item.pos.x, item.pos.z, placedItems, item) - item.pos.y) > 0.05 ? 0.2 : 0;
                     const confidence = Math.max(0.05, centered - crowdPenalty - supportPenalty);
                     if (confidence < 0.16) continue;
                     simState.cameraDetections.push({
@@ -1051,12 +1087,14 @@ export const BabylonScene: React.FC = () => {
                     const tile = placedItems.find(item =>
                         Math.abs(item.position[0] - gx) < 0.1 && Math.abs(item.position[2] - gz) < 0.1
                     );
+                    const simHalf = partHalfHeight(simItem);
+                    const simRad = partRadius(simItem);
 
                     // Landing surface height (includes cobot top platform level)
-                    let surfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems);
+                    let surfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems, simItem);
 
                     // ── Stacking: settle on top of highest part below ─────
-                    const STACK_R = 0.22; // horizontal snap radius for stacking
+                    const STACK_R = Math.max(0.22, simRad * 0.86); // horizontal snap radius for stacking
                     simState.items.forEach((other, oi) => {
                         if (oi === index) return;
                         if (other.state === 'grabbed' || other.state === 'dead') return;
@@ -1064,9 +1102,10 @@ export const BabylonScene: React.FC = () => {
                         const dz = other.pos.z - simItem.pos.z;
                         if (Math.sqrt(dx * dx + dz * dz) < STACK_R) {
                             // Other part is below this one — its top is a surface
-                            const otherTop = other.pos.y + DISC_H;
-                            if (otherTop > surfY && other.pos.y < simItem.pos.y + DISC_H) {
-                                surfY = otherTop;
+                            const otherHalf = partHalfHeight(other);
+                            const stackedCenter = other.pos.y + otherHalf + simHalf;
+                            if (stackedCenter > surfY && other.pos.y <= simItem.pos.y + simHalf + 0.002) {
+                                surfY = stackedCenter;
                             }
                         }
                     });
@@ -1086,13 +1125,13 @@ export const BabylonScene: React.FC = () => {
 
                     // ── Belt / sender push ────────────────────────────────
                     const driveTile = getDriveTile(simItem.pos.x, simItem.pos.z, placedItems);
-                    if (driveTile && Math.abs(simItem.pos.y - itemSurfaceCenterY(driveTile)) < 0.05) {
+                    if (driveTile && Math.abs(simItem.pos.y - itemSurfaceCenterY(driveTile, simItem)) < 0.05) {
                         const spd = driveTile.config?.speed || 2;
                         const r = driveTile.rotation;
                         simItem.pos.x += (r === 1 ? spd : r === 3 ? -spd : 0) * delta;
                         simItem.pos.z += (r === 2 ? spd : r === 0 ? -spd : 0) * delta;
-                        const drivenSurfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems);
-                        if (drivenSurfY >= itemSurfaceCenterY(driveTile) - 0.01 && simItem.pos.y < drivenSurfY) {
+                        const drivenSurfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems, simItem);
+                        if (drivenSurfY >= itemSurfaceCenterY(driveTile, simItem) - 0.01 && simItem.pos.y < drivenSurfY) {
                             simItem.pos.y = drivenSurfY;
                             velY.set(index, 0);
                         }
@@ -1101,7 +1140,7 @@ export const BabylonScene: React.FC = () => {
                     // ── Scoring ───────────────────────────────────────────
                     if (tile?.type === 'receiver') {
                         const dist = Math.sqrt((simItem.pos.x - gx) ** 2 + (simItem.pos.z - gz) ** 2);
-                        const targetY = (tile.config?.machineHeight || TILE_CENTER_Y) + DISC_HALF_H;
+                        const targetY = itemSurfaceCenterY(tile, simItem);
                         const colorOk = !tile.config?.acceptColor || tile.config.acceptColor === 'any'
                             || tile.config.acceptColor === simItem.color;
                         if (dist < 0.35 && Math.abs(simItem.pos.y - targetY) < 0.1 && colorOk) {
@@ -1111,7 +1150,7 @@ export const BabylonScene: React.FC = () => {
                     }
                     if (tile?.type === 'indexed_receiver') {
                         const dist = Math.sqrt((simItem.pos.x - gx) ** 2 + (simItem.pos.z - gz) ** 2);
-                        const targetY = (tile.config?.machineHeight || TILE_CENTER_Y) + DISC_HALF_H;
+                        const targetY = itemSurfaceCenterY(tile, simItem);
                         if (dist < 0.3 && Math.abs(simItem.pos.y - targetY) < 0.1) {
                             const norm = ((simItem.rotY % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
                             simItem.state = 'dead';
@@ -1128,7 +1167,7 @@ export const BabylonScene: React.FC = () => {
             simState.items = simState.items.filter(i => i.state !== 'dead');
 
             // ── Part collision repulsion (belt/floor level only) ────
-            const partSpacing = (a: PartSize, b: PartSize) => partRadius(a) + partRadius(b);
+            const partSpacing = (a: typeof simState.items[0], b: typeof simState.items[0]) => partRadius(a) + partRadius(b);
             const items = simState.items;
             
             const isRepellable = (item: typeof items[0]) => {
@@ -1148,7 +1187,7 @@ export const BabylonScene: React.FC = () => {
                     const dx = items[j].pos.x - items[i].pos.x;
                     const dz = items[j].pos.z - items[i].pos.z;
                     const d = Math.sqrt(dx * dx + dz * dz);
-                    const minDist = partSpacing(items[i].size, items[j].size);
+                    const minDist = partSpacing(items[i], items[j]);
                     if (d < minDist && d > 0.001) {
                         const push = (minDist - d) * 0.5;
                         const nx = dx / d, nz = dz / d;
@@ -1164,7 +1203,7 @@ export const BabylonScene: React.FC = () => {
                     if (['belt', 'camera', 'pile', 'table'].includes(machine.type)) continue;
                     const w = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[0] || 2);
                     const d = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[1] || 2);
-                    const radius = partRadius(items[i].size) + 0.06;
+                    const radius = partRadius(items[i]) + 0.06;
                     
                     const isRotated = machine.rotation % 2 !== 0;
                     const effW = isRotated ? d : w;
@@ -1216,7 +1255,7 @@ export const BabylonScene: React.FC = () => {
                     const spacingZ = Math.min(0.52, Math.max(0.22, d / Math.max(2, rows)));
                     const startX = item.position[0] - ((cols - 1) * spacingX) / 2;
                     const startZ = item.position[2] - ((rows - 1) * spacingZ) / 2;
-                    const baseY = (item.config?.machineHeight || 0.7) + DISC_HALF_H + 0.02;
+                    const baseY = (item.config?.machineHeight || 0.7) + DEFAULT_PART_HALF + 0.02;
                     for (let i = 0; i < count; i++) {
                         const layer = Math.floor(i / slotsPerLayer);
                         const slotIndex = i % slotsPerLayer;

@@ -46,6 +46,7 @@ const defaultItems: PlacedItem[] = [
             mountSlot: [2, 2],
             defaultDropSortColor: true,
             defaultDropSortSize: true,
+            defaultDropSortShape: true,
             pickColors: [],
             pickSizes: [],
             linkedCameraIds: [],
@@ -71,6 +72,7 @@ const defaultItems: PlacedItem[] = [
             mountSlot: [2, 2],
             defaultDropSortColor: true,
             defaultDropSortSize: true,
+            defaultDropSortShape: true,
             pickColors: [],
             pickSizes: [],
             linkedCameraIds: [],
@@ -150,7 +152,7 @@ class Store {
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.spawnTemplateId = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'belt') { defaultConfig.speed = 2; defaultConfig.beltSize = [2.5, 2.5]; defaultConfig.beltHeight = 1; defaultConfig.beltBorders = [true, true]; }
-                if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.stackMatrix = [3, 3]; defaultConfig.mountSlot = [2, 2]; defaultConfig.defaultDropSortColor = true; defaultConfig.defaultDropSortSize = true; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; }
+                if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.stackMatrix = [3, 3]; defaultConfig.mountSlot = [2, 2]; defaultConfig.defaultDropSortColor = true; defaultConfig.defaultDropSortSize = true; defaultConfig.defaultDropSortShape = true; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; }
                 if (buildMode === 'camera') { defaultConfig.showBeam = true; }
                 if (buildMode === 'table') { defaultConfig.tableSize = [2.5, 2.5]; defaultConfig.tableHeight = 1; defaultConfig.tableGrid = [3, 3]; defaultConfig.showTableGrid = true; }
                 if (buildMode === 'pile') { defaultConfig.pileCount = 0; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; defaultConfig.tableGrid = [3, 3]; }

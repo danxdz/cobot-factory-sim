@@ -12,6 +12,7 @@ export interface ProgramStep {
     duration?: number;
     sortColor?: boolean;
     sortSize?: boolean;
+    sortShape?: boolean;
 }
 
 export interface PartTemplate {
@@ -51,6 +52,7 @@ export interface ItemConfig {
     linkedCameraIds?: string[]; // For Cobots: cameras allowed to provide detections
     defaultDropSortColor?: boolean; // For Cobots: default sort-by-color for new drop steps
     defaultDropSortSize?: boolean; // For Cobots: default sort-by-size for new drop steps
+    defaultDropSortShape?: boolean; // For Cobots: default sort-by-shape for new drop steps
     stackMax?: number; // For Cobots: max items per stack
     stackMatrix?: [number, number]; // For Cobots: [cols, rows] grid size
     mountSlot?: [number, number]; // For Cobots: arm mount slot [col, row] within stack grid
@@ -58,6 +60,8 @@ export interface ItemConfig {
     showTeachPoints?: boolean; // For Cobots: show taught pick/drop point balls while selected
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
     collisionStopped?: boolean; // For Cobots: local safety pause after collision
+    isStopped?: boolean; // For Cobots: manual pause toggle
+    triggerUnlock?: number; // For Cobots: force runtime unlock pulse
     showBeam?: boolean; // For Cameras: show/hide the vision cone
     beltSize?: [number, number]; // For Belts: [width, depth]
     beltHeight?: number; // For Belts: surface height

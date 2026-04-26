@@ -22,6 +22,43 @@ const PART_COLORS = [
     { label: 'Purple', value: '#a855f7' },
 ];
 const PROGRAM_ACTIONS: ProgramAction[] = ['move', 'pick', 'drop', 'wait'];
+const COBOT_PLATFORM_W = 1.98;
+const COBOT_PLATFORM_D = 1.98;
+const COBOT_PLATFORM_MARGIN = 0.16;
+const COBOT_PLATFORM_TOP_Y = 1.34 + 0.03;
+const COBOT_SLOT_RADIUS = 0.28;
+const PART_THICKNESS = 0.025;
+
+type CobotSlot = {
+    col: number;
+    row: number;
+    x: number;
+    y: number;
+    z: number;
+};
+
+function cobotSlotsWorld(item: PlacedItem, cols: number, rows: number): CobotSlot[] {
+    const usableW = Math.max(0.2, COBOT_PLATFORM_W - COBOT_PLATFORM_MARGIN);
+    const usableD = Math.max(0.2, COBOT_PLATFORM_D - COBOT_PLATFORM_MARGIN);
+    const cellW = usableW / cols;
+    const cellD = usableD / rows;
+    const rotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][item.rotation] ?? 0;
+    const cosY = Math.cos(rotY);
+    const sinY = Math.sin(rotY);
+    const slots: CobotSlot[] = [];
+
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            const lx = -usableW / 2 + cellW * (col + 0.5);
+            const lz = -usableD / 2 + cellD * (row + 0.5);
+            const x = item.position[0] + lx * cosY + lz * sinY;
+            const z = item.position[2] - lx * sinY + lz * cosY;
+            const y = item.position[1] + COBOT_PLATFORM_TOP_Y + PART_THICKNESS / 2;
+            slots.push({ col, row, x, y, z });
+        }
+    }
+    return slots;
+}
 const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { label: string, value: number, min: number, max: number, step: number, onChange: (val: number) => void, isWidth?: boolean }) => {
     const handleWheel = (e: React.WheelEvent) => {
         e.stopPropagation();
@@ -138,6 +175,7 @@ export const UI: React.FC = () => {
     const [showPartCreator, setShowPartCreator] = useState(false);
     const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
     const [showStopConfirm, setShowStopConfirm] = useState(false);
+    const [showHelpModal, setShowHelpModal] = useState(false);
     const [keepBuilding, setKeepBuilding] = useState(false);
     const { 
         credits, 
@@ -269,7 +307,14 @@ export const UI: React.FC = () => {
         simState.reset();
         placedItems.forEach(item => {
             if (item.type === 'cobot') {
-                updatePlacedItem(item.id, { config: { ...item.config, isStopped: false } });
+                updatePlacedItem(item.id, {
+                    config: {
+                        ...item.config,
+                        isStopped: false,
+                        collisionStopped: false,
+                        triggerUnlock: Date.now(),
+                    }
+                });
             }
         });
     };
@@ -291,12 +336,75 @@ export const UI: React.FC = () => {
                 const grid = selectedItem.config?.stackMatrix || [3, 3];
                 const cols = Math.max(1, Math.min(6, Math.round(grid[0] || 3)));
                 const rows = Math.max(1, Math.min(6, Math.round(grid[1] || 3)));
+                const total = cols * rows;
+                if (total <= 1) return;
                 const [curColRaw, curRowRaw] = selectedItem.config?.mountSlot || [cols - 1, rows - 1];
                 const curCol = Math.max(0, Math.min(cols - 1, Math.round(curColRaw)));
                 const curRow = Math.max(0, Math.min(rows - 1, Math.round(curRowRaw)));
-                const total = cols * rows;
                 const currentIndex = curRow * cols + curCol;
-                const nextIndex = (currentIndex + 1) % total;
+                const maxStack = Math.max(1, Math.min(20, Math.round(selectedItem.config?.stackMax || 10)));
+                const slots = cobotSlotsWorld(selectedItem, cols, rows);
+                const activeParts = simState.items.filter(part => part.state !== 'dead' && part.state !== 'grabbed');
+
+                const itemsAtSlot = (slotIndex: number) => {
+                    const slot = slots[slotIndex];
+                    const r2 = COBOT_SLOT_RADIUS * COBOT_SLOT_RADIUS;
+                    return activeParts.filter(part => {
+                        const dx = part.pos.x - slot.x;
+                        const dz = part.pos.z - slot.z;
+                        return (dx * dx + dz * dz) <= r2;
+                    });
+                };
+
+                const clearMountSlot = (targetIndex: number) => {
+                    const occupancy = slots.map((_, idx) => itemsAtSlot(idx));
+                    const allOccupants = occupancy[targetIndex];
+                    if (allOccupants.length === 0) return true;
+                    if (allOccupants.some(part => part.state !== 'free')) return false;
+
+                    let freeCapacity = 0;
+                    for (let idx = 0; idx < occupancy.length; idx++) {
+                        if (idx === targetIndex) continue;
+                        freeCapacity += Math.max(0, maxStack - occupancy[idx].length);
+                    }
+                    if (freeCapacity < allOccupants.length) return false;
+
+                    const blockers = [...allOccupants].sort((a, b) => b.pos.y - a.pos.y);
+                    for (const blocker of blockers) {
+                        let destination = -1;
+                        for (let offset = 1; offset < total; offset++) {
+                            const idx = (targetIndex + offset) % total;
+                            if (idx === targetIndex) continue;
+                            if (occupancy[idx].length < maxStack) {
+                                destination = idx;
+                                break;
+                            }
+                        }
+                        if (destination < 0) return false;
+
+                        const slot = slots[destination];
+                        const stackTop = occupancy[destination].reduce(
+                            (top, existing) => Math.max(top, existing.pos.y + PART_THICKNESS),
+                            slot.y
+                        );
+                        blocker.pos.set(slot.x, stackTop, slot.z);
+                        blocker.rotY = 0;
+                        occupancy[targetIndex] = occupancy[targetIndex].filter(part => part !== blocker);
+                        occupancy[destination].push(blocker);
+                    }
+                    return true;
+                };
+
+                let nextIndex = -1;
+                for (let step = 1; step < total; step++) {
+                    const candidate = (currentIndex + step) % total;
+                    if (clearMountSlot(candidate)) {
+                        nextIndex = candidate;
+                        break;
+                    }
+                }
+                if (nextIndex < 0) return;
+
                 const nextCol = nextIndex % cols;
                 const nextRow = Math.floor(nextIndex / cols);
                 updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, mountSlot: [nextCol, nextRow] } });
@@ -360,6 +468,7 @@ export const UI: React.FC = () => {
                     pos: [...lastPos] as [number, number, number],
                     sortColor: selectedItem.config?.defaultDropSortColor !== false,
                     sortSize: selectedItem.config?.defaultDropSortSize !== false,
+                    sortShape: selectedItem.config?.defaultDropSortShape !== false,
                 }
                 : { action, pos: [...lastPos] as [number, number, number] };
         updateProgram([...current, nextStep]);
@@ -391,9 +500,13 @@ export const UI: React.FC = () => {
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, ...patch } });
     };
 
-    const setDropSortPreference = (field: 'sortColor' | 'sortSize', checked: boolean) => {
+    const setDropSortPreference = (field: 'sortColor' | 'sortSize' | 'sortShape', checked: boolean) => {
         if (!selectedItem) return;
-        const key = field === 'sortColor' ? 'defaultDropSortColor' : 'defaultDropSortSize';
+        const key = field === 'sortColor'
+            ? 'defaultDropSortColor'
+            : field === 'sortSize'
+                ? 'defaultDropSortSize'
+                : 'defaultDropSortShape';
         const nextProgram = (selectedItem.config?.program || []).map(step =>
             step.action === 'drop' ? { ...step, [field]: checked } : step
         );
@@ -418,6 +531,7 @@ export const UI: React.FC = () => {
     const snapValue = (value: number, step = snapStep) => snapInputs ? Math.round(value / step) * step : value;
     const controllerSortColor = selectedItem?.config?.defaultDropSortColor !== false;
     const controllerSortSize = selectedItem?.config?.defaultDropSortSize !== false;
+    const controllerSortShape = selectedItem?.config?.defaultDropSortShape !== false;
 
     const unlockSelectedCobot = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
@@ -912,6 +1026,15 @@ export const UI: React.FC = () => {
                                                                     />
                                                                     <span className="text-[9px] font-bold text-gray-300">SIZE</span>
                                                                 </label>
+                                                                <label className="flex items-center gap-1 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className="w-3 h-3 accent-[#38bdf8]"
+                                                                        checked={controllerSortShape}
+                                                                        onChange={(e) => setDropSortPreference('sortShape', e.target.checked)}
+                                                                    />
+                                                                    <span className="text-[9px] font-bold text-gray-300">SHAPE</span>
+                                                                </label>
                                                             </div>
                                                         </div>
                                                         <button onClick={handleClearProgram} className="text-[10px] text-red-400 hover:text-red-300">Clear</button>
@@ -936,6 +1059,7 @@ export const UI: React.FC = () => {
                                                                                         duration: undefined,
                                                                                         sortColor: controllerSortColor,
                                                                                         sortSize: controllerSortSize,
+                                                                                        sortShape: controllerSortShape,
                                                                                     }
                                                                                     : { action: e.target.value as ProgramAction, pos: step.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]], duration: undefined }
                                                                         )}
@@ -1237,6 +1361,37 @@ export const UI: React.FC = () => {
 
                         </div>
                     </>
+                )}
+
+                {showHelpModal && (
+                    <div className="fixed inset-0 z-[68] bg-black/55 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-[min(560px,94vw)] rounded-xl border border-gray-700 bg-gray-900 text-gray-100 shadow-2xl overflow-hidden">
+                            <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+                                <div className="text-sm font-black tracking-wide text-blue-200">CONTROLS</div>
+                                <button onClick={() => setShowHelpModal(false)} className="p-1 rounded hover:bg-gray-800 text-gray-300">
+                                    <X size={18} />
+                                </button>
+                            </div>
+                            <div className="px-4 py-3 text-xs sm:text-sm text-gray-300 flex flex-col gap-3">
+                                <div>
+                                    <div className="font-bold text-white mb-1">Camera</div>
+                                    <ul className="list-disc pl-5 space-y-1">
+                                        <li>Rotate: left-click drag (desktop) or one-finger drag (mobile).</li>
+                                        <li>Pan: right-click drag (desktop) or two-finger drag (mobile).</li>
+                                        <li>Zoom: mouse wheel (desktop) or pinch (mobile).</li>
+                                    </ul>
+                                </div>
+                                <div>
+                                    <div className="font-bold text-white mb-1">Build</div>
+                                    <ul className="list-disc pl-5 space-y-1">
+                                        <li>Select an item group in the bottom toolbar, then click a grid tile to place.</li>
+                                        <li>Use Rotate on selected items to change direction or cycle cobot mount slots.</li>
+                                        <li>Stop pauses with reset confirmation; Play resumes simulation.</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 )}
 
                 {showPartCreator && (

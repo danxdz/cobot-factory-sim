@@ -1,0 +1,344 @@
+(function () {
+
+
+var mod_3d = angular.module('mod_3d', [])
+
+
+.controller("move_xy", function(){
+	var tmp = this;
+	tmp.x = "0";
+	this.close_hand = function () {
+		console.log(graus(gr.rotation.z));
+		if (graus(gr.rotation.z) < 295) {
+        	gr.rotation.z += radianos(5);
+        	gl.rotation.z += radianos(5);
+		} else {
+			clearInterval (tmp.anim);
+		}
+	};
+	this.open_hand = function () {
+		console.log(graus(gr.rotation.z));
+		if (graus(gr.rotation.z) > 260) {
+        	gr.rotation.z -= radianos(1);
+        	gl.rotation.z -= radianos(1);
+		} else {
+			clearInterval (tmp.anim);
+		}
+	};
+	this.close = function (e) {
+		if (tmp.keyp == "17" || tmp.keyp == "16") {
+			//console.log (e);
+			//console.log("close gr gl");
+			clearInterval (tmp.anim);
+        	tmp.anim = setInterval( function () {
+        		tmp.close_hand();
+        	} , 1000/60);
+    	}
+	};
+	this.open = function (e) {
+		//console.log (e);
+		//console.log("open gr gl");
+		if (tmp.keyp == "17" || tmp.keyp == "16") {
+    	    clearInterval (tmp.anim);
+        	tmp.anim = setInterval( function () {
+        	tmp.open_hand();
+    	    } , 1000/60);
+    	}
+	};
+	this.move = function (e) {
+		if (tmp.keyp == "17") {
+			tmp.x = (e.pageY-500)*-1;
+			tmp.y = (e.pageX-650)/2;
+			init(tmp.x,tmp.y,old_z);
+		}
+		if (tmp.keyp == "16") {
+			tmp.z = (e.pageY-500)*-1;
+			init(old_x,old_y, tmp.z);
+		}
+	//console.log("123");
+	};
+	this.key_down = function (e) {
+	//console.log(e);
+		tmp.keyp = e.keyCode;
+ 		if (tmp.keyp == "32") {
+ 			controls.update();
+ 		}
+
+	};
+	this.key_up = function (k) {
+		//console.log(k);
+		tmp.keyp = "";
+	};
+
+})
+
+.controller("move",  function() {
+	this.x = old_x;
+	this.y = old_y;
+	this.z = old_z;
+	//init(this.x,this.y,this.z);
+	initt ();
+	animate();	
+	//console.log(this);
+	var is = this;
+	is.da = [];
+	this.move = function (data, axis, way) {
+		tmp = 0;
+		switch(way) {
+			case true: tmp = 20;
+			break;
+			default: tmp = -20;
+		};
+		switch(axis) {
+			case 'x': 
+				//console.log('x');
+				data.x = data.x + tmp ;
+				break;
+			case 'y': //console.log('y');
+				data.y = data.y + tmp ;
+				break;
+			case 'z': //console.log('z');
+				data.z = data.z + tmp ;
+				break;
+		};
+		init(data.x,data.y,data.z);
+	};
+})
+
+
+var scene,
+ camera,
+ renderer,
+ position,
+ target,
+ tween,
+ tweenBack,
+ x_val_old,
+ y_val_old,
+ anga_old,
+ angB_old,
+ link2,
+ link1,
+
+ old_x = 100,
+ old_y = 0,
+ old_z = 0,
+ old_rot = 0;
+
+ var set_anim = false;
+
+
+function initt () { 
+
+// Create the scene and set the scene size. 
+scene = new THREE.Scene();
+
+var	WIDTH = window.innerWidth-100,
+ 	HEIGHT = window.innerHeight-200;
+	// Create a renderer and add it to the DOM. 
+	renderer = new THREE.WebGLRenderer({antialias:true});
+	renderer.setSize(WIDTH, HEIGHT);
+	
+	document.getElementById('canvas3d').appendChild(renderer.domElement);
+ 	//document.body.appendChild(renderer.domElement);
+	var VIEW_ANGLE = 50, ASPECT = WIDTH / HEIGHT, NEAR = 0.1, FAR = 10000;
+	// Create a camera, zoom it out from the model a bit, and add it to the scene. 
+	camera = new THREE.PerspectiveCamera(VIEW_ANGLE,ASPECT,NEAR,FAR);
+	camera.position.set(100,500,1000);
+	camera.rotation.x = 100;
+	scene.add(camera); 
+
+ 	// Create an event listener that resizes the renderer with the browser window. 
+	window.addEventListener('resize', function() {
+ 		var WIDTH = window.innerWidth, HEIGHT = window.innerHeight;
+ 	 	renderer.setSize(WIDTH, HEIGHT); 
+ 	 	camera.aspect = WIDTH / HEIGHT; 
+ 	 	camera.updateProjectionMatrix(); }); // Set the background color of the scene. 
+ 		renderer.setClearColor(0xffffff, .1); 
+ 		renderer.shadowMapEnabled = true;
+		renderer.shadowMapSoft = true;
+ 		// Create a light, set its position, and add it to the scene. 
+ 		var light = new THREE.DirectionalLight(0xffffff); 
+ 		var light2 = new THREE.PointLight(0xffffff); 
+ 		light.castShadow = true;
+ 		light.position.set(2000,1800,200);
+ 		light2.position.set(-200,1200,700);
+	 	scene.add(light); 
+	 	scene.add(light2);
+	 	group = new THREE.Object3D();
+	 	//create an empty container
+	 	braco = new THREE.Object3D(); 
+		// Load in the mesh and add it to the scene.
+		var loader = new THREE.JSONLoader();
+      	loader.load( "/shapes/br_1.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0x4e676b});
+        	base = new THREE.Mesh(geometry, material);
+    		base.castShadow = true;
+    		base.receiveShadow = true;
+	        group.add(base);
+    	});
+      	loader.load( "/shapes/br_2.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0x9eb5b8});
+        	link1 = new THREE.Mesh(geometry, material);
+    		link1.castShadow = true;
+    		link1.receiveShadow = true;
+            braco.add(link1);
+      	});
+        loader.load( "/shapes/br_3.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0x9eb5b8});
+        	link2 = new THREE.Mesh(geometry, material);
+    		link2.castShadow = true;
+    		link2.receiveShadow = true;
+    		braco.add(link2);
+      	});
+        loader.load( "/shapes/br_4.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0x9eb5b8});
+        	spin = new THREE.Mesh(geometry, material);
+    		spin.castShadow = true;
+    		spin.receiveShadow = true;
+        	spin.rotation.z = -.1;
+        	braco.add(spin);
+      	});
+		loader.load( "/shapes/br_5.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0x9eb5b8});
+        	gr = new THREE.Mesh(geometry, material);
+    		gr.castShadow = true;
+    		gr.receiveShadow = true;
+        	braco.add(gr);
+	       	gl = new THREE.Mesh(geometry, material);
+    		gl.castShadow = true;
+    		gl.receiveShadow = true;
+    	    braco.add(gl);
+    	});
+
+    	group.add(braco);
+    	
+    	loader.load( "/shapes/floor.js", function(geometry){
+        	var material = new THREE.MeshLambertMaterial({color: 0xedf1f2});
+        	chao = new THREE.Mesh(geometry, material);
+    		chao.receiveShadow = true;
+    		scene.add(chao);
+    	});
+
+		scene.add( group );//when done, add the group to the scene
+
+		// Add OrbitControls so that we can pan around with the mouse.
+  		controls = new THREE.OrbitControls(camera);
+	}
+
+
+function init(x_val,y_val,z_val) {
+
+dif_x = old_x - x_val;
+
+position = {x: old_x, y: old_y, z: old_z};
+	tween = new TWEEN.Tween(position)
+		.to({x: x_val, y: y_val, z: z_val}, 1000)
+		.delay(100)
+		.easing(TWEEN.Easing.Linear.None)
+		.onUpdate(update);
+		
+		old_x = x_val;
+		old_y = y_val;
+		old_z = z_val;
+		tween.start();
+}
+
+function animate() {
+	requestAnimationFrame( animate );
+ 	renderer.render(scene, camera);
+ 	//controls.update();
+ 	TWEEN.update();
+}
+
+function update() {
+	if (set_anim != true) {
+		pos_init();
+		set_anim = true;
+	}
+
+	def_pos(position.x,position.y,position.z);
+
+
+group.rotation.y = ang_rot;
+////console.log("angRot: " + ang_rot);				
+link1.rotation.z = anga;
+
+spin.position.y = position.z+60;
+spin.position.x = vec_x;
+
+gr.position.y= position.z+57;
+gr.position.x =vec_x+70;
+
+gl.position.y= position.z+57;
+gl.position.x =vec_x+70;
+
+link2.position.y = l1_x;
+link2.position.x = l1_z;
+link2.rotation.z = angB;
+
+}
+
+function def_pos (x_val,y_val,z_val) {
+
+vec_x = Math.sqrt(Math.pow(x_val,2)+Math.pow(y_val,2));
+////console.log("vec_x; " + vec_x);
+li_len = Math.sqrt(Math.pow(vec_x,2)+Math.pow(z_val+60,2)); 
+////console.log("li_len; "+li_len);
+ang_a_par = Math.atan2(z_val+60,vec_x)*180/Math.PI;
+////console.log("ang_a_par; "+ang_a_par);
+ang_comp = (Math.acos((Math.pow(200,2)-Math.pow(150,2)+Math.pow(li_len,2))/(2*200*li_len))*180)/Math.PI;
+////console.log("ang_comp; "+ang_comp);
+ang_a = ang_comp + ang_a_par;
+ang_a_rad = ang_a*Math.PI/180;
+ang_b = (Math.acos((Math.pow(200,2)+Math.pow(150,2)-Math.pow(li_len,2))/(2*200*150)))*180/Math.PI;
+ang_b_rad = ang_b*Math.PI/180;
+////console.log("ang_a; "+ang_a);
+////console.log("ang_b; "+ang_b);
+l1_x = Math.sin(ang_a_rad)*200;
+////console.log("l1_x; "+l1_x);
+l1_z = Math.cos(ang_a_rad)*200;
+////console.log("l1_z; "+l1_z);
+////console.log("x: " + x_val + " y: " + y_val + " z: " + z_val);
+////console.log("l1_z: " + l1_z+" l1_x: " + l1_x   );
+ang_rot =(Math.atan2(position.x,position.y)) ;
+anga = ang_a_rad- radianos(90);
+angB = radianos(90 )-(ang_b_rad+anga);
+////console.log(graus(angB));
+}
+
+function graus (tmp) {
+	tmp = tmp*180/Math.PI;
+	return tmp;
+}
+function radianos (tmp) {
+	tmp = tmp*Math.PI/180;
+	return tmp;
+}
+
+function pos_init(){
+link2.position.y = 200;
+link2.rotation.y = Math.PI;
+spin.position.y = 200;
+spin.position.x = 200;
+gr.rotation.x = (Math.PI/2)*-1;
+gr.rotation.z = radianos(260);
+gr.position.z = 10;
+gl.rotation.x = (Math.PI/2);
+gl.rotation.z = radianos(260);
+gl.position.z = -10;
+}
+
+
+setInterval( function () {
+    stats.begin();
+    stats.end();
+}, 1000 / 60 );
+
+
+stats = new Stats();
+stats.domElement.style.position = 'absolute';
+stats.domElement.style.top = '0px';
+document.body.appendChild( stats.domElement );
+
+})();

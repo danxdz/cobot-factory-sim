@@ -1,0 +1,32 @@
+import { Vector3 } from '@babylonjs/core';
+import { PartSize } from './types';
+
+export interface SimItem {
+    id: string;
+    pos: Vector3;
+    rotY: number;
+    state: 'free' | 'targeted' | 'grabbed' | 'dead';
+    color: string;
+    size: PartSize;
+    meshIndex?: number; // which pool slot this occupies
+}
+
+export interface CameraDetection {
+    cameraId: string;
+    itemId: string;
+    pos: Vector3;
+    rotY: number;
+    color: string;
+    size: PartSize;
+    confidence: number;
+    planarOffset: number;
+}
+
+export const simState = {
+    items: [] as SimItem[],
+    cameraDetections: [] as CameraDetection[],
+    reset: () => {
+        simState.items = [];
+        simState.cameraDetections = [];
+    }
+};

@@ -1,0 +1,200 @@
+import { useState, useEffect, useCallback } from 'react';
+import { FactoryState, ITEM_COSTS, ItemType, PlacedItem, Direction, ItemConfig, MachineRuntimeState } from './types';
+
+const STORAGE_KEY = 'cobot-factory-sim-v8'; // Bumped for pile + indexed_receiver types
+
+const loadState = () => {
+    try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+            return JSON.parse(stored);
+        }
+    } catch (e) {
+        console.warn("Failed to load state from localStorage", e);
+    }
+    return null;
+};
+
+const generateId = () => Math.random().toString(36).substring(2, 15);
+
+const defaultItems: PlacedItem[] = [
+    { id: 's1', type: 'sender', position: [-4, 0, 0], rotation: 1, config: { speed: 3, spawnColor: 'any', spawnSize: 'any', machineSize: [2, 2], machineHeight: 1 } }, 
+    { id: 'b1', type: 'belt', position: [-2, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2, 2], beltHeight: 1, beltBorders: [true, true] } },   
+    { id: 'b2', type: 'belt', position: [0, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2, 2], beltHeight: 1, beltBorders: [true, true] } },    
+    { id: 'b3', type: 'belt', position: [2, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2, 2], beltHeight: 1, beltBorders: [true, true] } },    
+    { 
+        id: 'c1', 
+        type: 'cobot', 
+        position: [2, 0, 2], 
+        rotation: 0, 
+        config: { 
+            speed: 1,
+            pickColors: [],
+            pickSizes: [],
+            linkedCameraIds: [],
+            showTeachZones: true,
+            showTeachPoints: true,
+            showArmRange: true,
+            program: [
+                { action: 'pick', pos: [2, 1.25, 0] },
+                { action: 'drop', pos: [2, 1.25, 4] }
+            ]
+        } 
+    },   
+    { id: 'r1', type: 'receiver', position: [2, 0, 4], rotation: 0, config: { acceptColor: 'any', machineSize: [2, 2], machineHeight: 1 } },
+    { id: 't1', type: 'table', position: [-2, 0, 2], rotation: 0, config: { tableSize: [1.8, 1.8], tableHeight: 1, tableGrid: [2, 2], showTableGrid: true } },
+    { id: 'cam1', type: 'camera', position: [2, 0, 0], rotation: 0, config: { showBeam: true } }
+];
+
+const initialState = loadState() || {
+    credits: 5000,
+    score: 0,
+    placedItems: defaultItems,
+};
+
+class Store {
+    state: FactoryState;
+    listeners = new Set<() => void>();
+
+    constructor() {
+        this.state = {
+            credits: initialState.credits,
+            score: initialState.score,
+            placedItems: initialState.placedItems,
+            isRunning: false,
+            buildMode: null,
+            buildRotation: 0,
+            buildConfig: { speed: 1 },
+            selectedItemId: null,
+            teachAction: null,
+            machineStates: {},
+            
+            setCredits: (credits: number) => this.setState({ credits }),
+            setScore: (score) => {
+                const newScore = typeof score === 'function' ? score(this.state.score) : score;
+                this.setState({ score: newScore });
+            },
+            setIsRunning: (isRunning: boolean) => {
+                if (isRunning && !this.state.isRunning) {
+                    this.setState({
+                        isRunning,
+                        score: 0,
+                        selectedItemId: null,
+                        teachAction: null,
+                        placedItems: this.state.placedItems.map(item => item.type === 'cobot'
+                            ? { ...item, config: { ...item.config, collisionStopped: false } }
+                            : item
+                        )
+                    });
+                } else {
+                    this.setState({ isRunning });
+                }
+            },
+            setBuildMode: (buildMode: ItemType | null) => {
+                let defaultConfig: ItemConfig = { speed: 1 };
+                if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
+                if (buildMode === 'receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
+                if (buildMode === 'belt') { defaultConfig.speed = 2; defaultConfig.beltSize = [2, 2]; defaultConfig.beltHeight = 1; defaultConfig.beltBorders = [true, true]; }
+                if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; }
+                if (buildMode === 'camera') { defaultConfig.showBeam = true; }
+                if (buildMode === 'table') { defaultConfig.tableSize = [1.8, 1.8]; defaultConfig.tableHeight = 1; defaultConfig.tableGrid = [2, 2]; defaultConfig.showTableGrid = true; }
+                if (buildMode === 'pile') { defaultConfig.pileCount = 12; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
+                if (buildMode === 'indexed_receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
+                
+                this.setState({ buildMode, isRunning: false, selectedItemId: null, teachAction: null, buildConfig: defaultConfig });
+            },
+            setBuildRotation: (buildRotation: Direction) => this.setState({ buildRotation }),
+            setBuildConfig: (config: Partial<ItemConfig>) => this.setState({ buildConfig: { ...this.state.buildConfig, ...config } }),
+            setSelectedItemId: (id: string | null) => this.setState({ selectedItemId: id, buildMode: null, teachAction: null }),
+            setTeachAction: (action) => this.setState({ teachAction: action }),
+            setMachineState: (id: string, runtime: MachineRuntimeState) => {
+                const prev = this.state.machineStates[id];
+                if (prev?.health === runtime.health && prev?.label === runtime.label && prev?.detail === runtime.detail) return;
+                this.setState({ machineStates: { ...this.state.machineStates, [id]: runtime } });
+            },
+            clearMachineStates: () => this.setState({ machineStates: {} }),
+            
+            addPlacedItem: (item: Omit<PlacedItem, 'id'>) => {
+                const cost = ITEM_COSTS[item.type];
+                if (this.state.credits >= cost) {
+                    this.setState({
+                        credits: this.state.credits - cost,
+                        placedItems: [...this.state.placedItems, { ...item, id: generateId() }],
+                    });
+                }
+            },
+            updatePlacedItem: (id: string, updates: Partial<PlacedItem>) => {
+                this.setState({
+                    placedItems: this.state.placedItems.map(item => {
+                        if (item.id === id) {
+                            return {
+                                ...item,
+                                ...updates,
+                                config: { ...item.config, ...updates.config }
+                            };
+                        }
+                        return item;
+                    })
+                });
+            },
+            removePlacedItem: (id: string) => {
+                this.setState({
+                    placedItems: this.state.placedItems.filter((i: PlacedItem) => i.id !== id),
+                    machineStates: Object.fromEntries(Object.entries(this.state.machineStates).filter(([key]) => key !== id)),
+                    selectedItemId: this.state.selectedItemId === id ? null : this.state.selectedItemId,
+                    teachAction: this.state.selectedItemId === id ? null : this.state.teachAction
+                });
+            },
+            resetFactory: () => {
+                this.setState({
+                    credits: 5000,
+                    score: 0,
+                    isRunning: false,
+                    placedItems: defaultItems,
+                    buildMode: null,
+                    selectedItemId: null,
+                    teachAction: null,
+                    machineStates: {}
+                });
+            }
+        };
+    }
+
+    getState = () => this.state;
+
+    setState = (updates: Partial<FactoryState>) => {
+        this.state = { ...this.state, ...updates };
+        this.listeners.forEach(l => l());
+        
+        try {
+            const { credits, placedItems } = this.state;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ credits, placedItems }));
+        } catch (e) {
+            console.warn("Failed to save state to localStorage", e);
+        }
+    };
+
+    subscribe = (listener: () => void) => {
+        this.listeners.add(listener);
+        return () => this.listeners.delete(listener);
+    };
+}
+
+export const factoryStore = new Store();
+
+export function useFactoryStore<T = FactoryState>(selector?: (state: FactoryState) => T): T {
+    const getSelection = useCallback(() => {
+        const state = factoryStore.getState();
+        return selector ? selector(state) : (state as unknown as T);
+    }, [selector]);
+
+    const [selection, setSelection] = useState(() => getSelection());
+
+    useEffect(() => {
+        const listener = () => setSelection(() => getSelection());
+        const unsubscribe = factoryStore.subscribe(listener);
+        return unsubscribe;
+    }, [getSelection]);
+
+    return selection;
+}

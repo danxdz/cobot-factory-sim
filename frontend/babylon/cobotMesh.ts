@@ -7,7 +7,7 @@ import { PartSize, PlacedItem, ProgramStep } from '../types';
 import { factoryStore } from '../store';
 
 const DISC_H = 0.025;
-const DISC_RADIUS = 0.3;
+const DISC_RADIUS = 0.28;
 const DROP_CLEARANCE = 0.22;
 const DROP_HOVER_CLEARANCE = 0.28;
 const PICK_HOVER_CLEARANCE = 0.24;
@@ -22,8 +22,64 @@ const PICK_CONTACT_PAD_GAP = 0.115;
 const PICK_SURFACE_CONTACT_GAP = 0.11;
 const PICK_SUPPORT_CLEARANCE = 0.03;
 const STACK_SLOT_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
+const COBOT_BODY_W = 2.15;
+const COBOT_BODY_D = 2.15;
+const COBOT_BODY_H = 1.34;
+const COBOT_PLATFORM_W = 1.98; // ~3 x large-part diameter (3 x 0.56) with margin
+const COBOT_PLATFORM_D = 1.98;
+const COBOT_PLATFORM_THICKNESS = 0.03;
+const COBOT_PLATFORM_TOP_Y = COBOT_BODY_H + COBOT_PLATFORM_THICKNESS;
+const COBOT_PLATFORM_MARGIN = 0.16;
+const COBOT_PEDESTAL_HEIGHT = 0.52;
+const COBOT_BASE_PIVOT_Y = COBOT_PEDESTAL_HEIGHT;
+const COBOT_MOUNT_REACH_OFFSET = COBOT_BASE_PIVOT_Y + 0.05;
+const IK_BASE_CLEARANCE_RADIUS = 0.42;
+const IK_SHOULDER_MIN = -1.15;
+const IK_SHOULDER_MAX = 1.28;
+const IK_ELBOW_MIN = 0.08;
+const IK_ELBOW_MAX = 2.38;
+const IK_WRIST_MIN = -1.35;
+const IK_WRIST_MAX = 1.35;
+
+function partRadiusForSize(size: PartSize): number {
+    if (size === 'small') return 0.22;
+    if (size === 'medium') return 0.25;
+    return 0.28;
+}
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
+
+function appendSegmentSamples(out: Vector3[], a: Vector3, b: Vector3, steps: number) {
+    const n = Math.max(1, steps);
+    for (let i = 0; i <= n; i++) {
+        if (out.length > 0 && i === 0) continue;
+        out.push(Vector3.Lerp(a, b, i / n));
+    }
+}
+
+function collectArmSamples(state: CobotState): Vector3[] {
+    state.mountBase.computeWorldMatrix(true);
+    state.shoulder.computeWorldMatrix(true);
+    state.elbow.computeWorldMatrix(true);
+    state.wrist.computeWorldMatrix(true);
+    state.wristRoll.computeWorldMatrix(true);
+    state.gripperTip.computeWorldMatrix(true);
+
+    const mount = state.mountBase.getAbsolutePosition();
+    const shoulder = state.shoulder.getAbsolutePosition();
+    const elbow = state.elbow.getAbsolutePosition();
+    const wrist = state.wrist.getAbsolutePosition();
+    const roll = state.wristRoll.getAbsolutePosition();
+    const tip = state.gripperTip.getAbsolutePosition();
+
+    const samples: Vector3[] = [];
+    appendSegmentSamples(samples, mount, shoulder, 2);
+    appendSegmentSamples(samples, shoulder, elbow, 4);
+    appendSegmentSamples(samples, elbow, wrist, 3);
+    appendSegmentSamples(samples, wrist, roll, 2);
+    appendSegmentSamples(samples, roll, tip, 2);
+    return samples;
+}
 
 function topOfPileAt(x: number, z: number, baseY: number, ignoreItem?: SimItem | null, radius = 0.28): number {
     return simState.items.reduce((top, item) => {
@@ -51,6 +107,9 @@ function itemFootprintHit(item: PlacedItem, x: number, z: number, pad = 0): bool
         const [w, d] = item.config?.machineSize || [2, 2];
         return dx <= w / 2 + pad && dz <= d / 2 + pad;
     }
+    if (item.type === 'cobot') {
+        return dx <= COBOT_PLATFORM_W / 2 + pad && dz <= COBOT_PLATFORM_D / 2 + pad;
+    }
     return dx <= 1 + pad && dz <= 1 + pad;
 }
 
@@ -58,7 +117,7 @@ function machineTopY(item: PlacedItem): number {
     switch (item.type) {
         case 'table': return item.config?.tableHeight || 0.45;
         case 'belt': return item.config?.beltHeight || 0.538;
-        case 'cobot': return 1.19;
+        case 'cobot': return COBOT_PLATFORM_TOP_Y;
         case 'sender':
         case 'receiver':
         case 'indexed_receiver':
@@ -194,55 +253,187 @@ function nearbyPickupPenalty(candidate: SimItem): number {
     return crowding;
 }
 
-function getOrganizedDropTarget(state: CobotState, container: PlacedItem, sortColor: boolean, sortSize: boolean): Vector3 {
-    const gridW = container.config?.tableGrid?.[0] || 2;
-    const gridD = container.config?.tableGrid?.[1] || 2;
+function itemsNearSlot(slot: Vector3, radius: number, ignoreItem?: SimItem | null): SimItem[] {
+    return simState.items.filter(item => {
+        if (item === ignoreItem || item.state === 'dead' || item.state === 'grabbed') return false;
+        const dx = item.pos.x - slot.x;
+        const dz = item.pos.z - slot.z;
+        return Math.sqrt(dx * dx + dz * dz) < radius;
+    });
+}
+
+function getOrganizedDropTarget(
+    state: CobotState,
+    container: PlacedItem,
+    sortColor: boolean,
+    sortSize: boolean,
+    itemHint?: { color: string; size: PartSize },
+    ignoreItem?: SimItem | null
+): Vector3 | null {
+    const grabbedOrHint = itemHint ?? (state.grabbedItem ? { color: state.grabbedItem.color, size: state.grabbedItem.size } : null);
+    if (!grabbedOrHint) return null;
+    const gridW = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[0] || 3)));
+    const gridD = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[1] || 3)));
     const sizeW = container.config?.machineSize?.[0] || container.config?.tableSize?.[0] || 2;
     const sizeD = container.config?.machineSize?.[1] || container.config?.tableSize?.[1] || 2;
 
-    const rotAngles: Record<string, number> = { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 };
-    const rotY = rotAngles[container.rotation] ?? 0;
-    
+    const rotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][container.rotation] ?? 0;
     const slots: Vector3[] = [];
+    const slotCoords: Array<{ x: number; z: number }> = [];
     const cellW = sizeW / gridW;
     const cellD = sizeD / gridD;
-    
+
     for (let x = 0; x < gridW; x++) {
         for (let z = 0; z < gridD; z++) {
             const lx = -sizeW / 2 + cellW / 2 + x * cellW;
             const lz = -sizeD / 2 + cellD / 2 + z * cellD;
-            
             const wx = container.position[0] + lx * Math.cos(rotY) + lz * Math.sin(rotY);
             const wz = container.position[2] - lx * Math.sin(rotY) + lz * Math.cos(rotY);
-            
             slots.push(new Vector3(wx, container.position[1], wz));
+            slotCoords.push({ x, z });
         }
     }
-    
-    const STACK_R = Math.min(cellW, cellD) * 0.45;
-    const slotContents = slots.map(sl =>
-        simState.items.find(i =>
-            i.state !== 'grabbed' &&
-            Math.sqrt((i.pos.x - sl.x) ** 2 + (i.pos.z - sl.z) ** 2) < STACK_R
-        )
-    );
-    
-    const slotCounts = slots.map((sl, i) => slotContents[i] ? 1 : 0);
-    const itemColor = state.grabbedItem!.color;
-    const itemSize = state.grabbedItem!.size;
-    
-    let bestIdx = slots.findIndex((_, i) => 
-        slotCounts[i] > 0 && 
-        (!sortColor || slotContents[i]?.color === itemColor) &&
-        (!sortSize || slotContents[i]?.size === itemSize)
+
+    const stackRadius = Math.max(0.16, Math.min(cellW, cellD) * 0.42);
+    const ignored = ignoreItem ?? state.grabbedItem;
+    const slotItems = slots.map(sl => itemsNearSlot(sl, stackRadius, ignored));
+    const slotCounts = slotItems.map(items => items.length);
+    const itemColor = grabbedOrHint.color;
+    const itemSize = grabbedOrHint.size;
+
+    const slotMatchesSort = (idx: number) => slotItems[idx].every(existing =>
+        (!sortColor || existing.color === itemColor) &&
+        (!sortSize || existing.size === itemSize)
     );
 
+    const colorOrder = STACK_SLOT_COLORS;
+    const sizeOrder: PartSize[] = ['small', 'medium', 'large'];
+    const colorIndex = Math.max(0, colorOrder.indexOf(itemColor));
+    const sizeIndex = Math.max(0, sizeOrder.indexOf(itemSize));
+    const preferredCol = gridW > 1 ? (colorIndex % gridW) : 0;
+    const preferredRow = gridD > 1 ? (sizeIndex % gridD) : 0;
+
+    const preferredIndices: number[] = [];
+    const pushUnique = (idx: number) => {
+        if (idx >= 0 && idx < slots.length && !preferredIndices.includes(idx)) preferredIndices.push(idx);
+    };
+
+    if (sortColor && sortSize) {
+        slotCoords.forEach((coord, idx) => {
+            if (coord.x === preferredCol && coord.z === preferredRow) pushUnique(idx);
+        });
+        slotCoords.forEach((coord, idx) => {
+            if (coord.x === preferredCol) pushUnique(idx);
+        });
+        slotCoords.forEach((coord, idx) => {
+            if (coord.z === preferredRow) pushUnique(idx);
+        });
+    } else if (sortColor) {
+        slotCoords.forEach((coord, idx) => {
+            if (coord.x === preferredCol) pushUnique(idx);
+        });
+    } else if (sortSize) {
+        slotCoords.forEach((coord, idx) => {
+            if (coord.z === preferredRow) pushUnique(idx);
+        });
+    }
+    for (let i = 0; i < slots.length; i++) pushUnique(i);
+
+    let bestIdx = preferredIndices.find(i => slotCounts[i] === 0 && slotMatchesSort(i)) ?? -1;
     if (bestIdx < 0) {
-        bestIdx = slots.findIndex((_, i) => slotCounts[i] === 0);
+        bestIdx = preferredIndices.find(i => slotCounts[i] > 0 && slotMatchesSort(i)) ?? -1;
     }
     if (bestIdx < 0) return null; // No free slots!
 
-    return slots[bestIdx];
+    const target = slots[bestIdx];
+    const dropY = topOfPileAt(target.x, target.z, dropBaseCenterY(state, target), ignored, stackRadius);
+    return new Vector3(target.x, dropY, target.z);
+}
+
+function getSelfPlatformDropTarget(
+    state: CobotState,
+    sortColor: boolean,
+    sortSize: boolean,
+    itemHint?: { color: string; size: PartSize },
+    ignoreItem?: SimItem | null
+): Vector3 | null {
+    const grabbedOrHint = itemHint ?? (state.grabbedItem ? { color: state.grabbedItem.color, size: state.grabbedItem.size } : null);
+    if (!grabbedOrHint || state.stackSlots.length === 0) return null;
+    const stackRadius = 0.24;
+    const itemColor = grabbedOrHint.color;
+    const itemSize = grabbedOrHint.size;
+    const ignored = ignoreItem ?? state.grabbedItem;
+
+    const slotItems = state.stackSlots.map(slot => itemsNearSlot(slot.worldPos, stackRadius, ignored));
+    const slotCounts = slotItems.map(items => items.length);
+
+    const hasRoom = (idx: number) => slotCounts[idx] < state.stackSlots[idx].maxStack;
+    const matchesSort = (idx: number) => slotItems[idx].every(existing =>
+        (!sortColor || existing.color === itemColor) &&
+        (!sortSize || existing.size === itemSize)
+    );
+
+    const maxCol = Math.max(...state.stackSlots.map(slot => slot.col));
+    const maxRow = Math.max(...state.stackSlots.map(slot => slot.row));
+    const gridW = maxCol + 1;
+    const gridD = maxRow + 1;
+    const colorOrder = STACK_SLOT_COLORS;
+    const sizeOrder: PartSize[] = ['small', 'medium', 'large'];
+    const colorIndex = Math.max(0, colorOrder.indexOf(itemColor));
+    const sizeIndex = Math.max(0, sizeOrder.indexOf(itemSize));
+    const preferredCol = gridW > 1 ? (colorIndex % gridW) : 0;
+    const preferredRow = gridD > 1 ? (sizeIndex % gridD) : 0;
+
+    const preferredIndices: number[] = [];
+    const pushUnique = (idx: number) => {
+        if (idx >= 0 && idx < state.stackSlots.length && !preferredIndices.includes(idx)) preferredIndices.push(idx);
+    };
+
+    if (sortColor && sortSize) {
+        state.stackSlots.forEach((slot, idx) => {
+            if (slot.col === preferredCol && slot.row === preferredRow) pushUnique(idx);
+        });
+        state.stackSlots.forEach((slot, idx) => {
+            if (slot.col === preferredCol) pushUnique(idx);
+        });
+        state.stackSlots.forEach((slot, idx) => {
+            if (slot.row === preferredRow) pushUnique(idx);
+        });
+    } else if (sortColor) {
+        state.stackSlots.forEach((slot, idx) => {
+            if (slot.col === preferredCol) pushUnique(idx);
+        });
+    } else if (sortSize) {
+        state.stackSlots.forEach((slot, idx) => {
+            if (slot.row === preferredRow) pushUnique(idx);
+        });
+    }
+    for (let i = 0; i < state.stackSlots.length; i++) pushUnique(i);
+    if (!sortColor && !sortSize) {
+        state.mountBase.computeWorldMatrix(true);
+        const mountPos = state.mountBase.getAbsolutePosition();
+        preferredIndices.sort((a, b) => {
+            const da = Vector3.DistanceSquared(state.stackSlots[a].worldPos, mountPos);
+            const db = Vector3.DistanceSquared(state.stackSlots[b].worldPos, mountPos);
+            return da - db;
+        });
+    }
+
+    let bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] === 0 && matchesSort(i)) ?? -1;
+    if (bestIdx < 0 && sortColor && !sortSize) {
+        bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] === 0 && state.stackSlots[i].color === itemColor) ?? -1;
+    }
+    if (bestIdx < 0) {
+        bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] > 0 && matchesSort(i)) ?? -1;
+    }
+    if (bestIdx < 0) {
+        bestIdx = preferredIndices.find(i => hasRoom(i)) ?? -1;
+    }
+    if (bestIdx < 0) return null;
+
+    const slot = state.stackSlots[bestIdx];
+    const stackTop = topOfPileAt(slot.worldPos.x, slot.worldPos.z, slot.worldPos.y, ignored, stackRadius);
+    return new Vector3(slot.worldPos.x, stackTop, slot.worldPos.z);
 }
 
 function currentDropTarget(state: CobotState): Vector3 | null {
@@ -263,15 +454,19 @@ function currentDropTarget(state: CobotState): Vector3 | null {
 
     const sortColor = step.sortColor !== false;
     const sortSize = step.sortSize !== false;
+    const selfSort = selfSortPreferences(state);
+
+    if (state.selfItem && itemFootprintHit(state.selfItem, step.pos[0], step.pos[2], 0.02)) {
+        const selfTarget = getSelfPlatformDropTarget(state, selfSort.sortColor, selfSort.sortSize);
+        return selfTarget;
+    }
 
     if (container && (sortColor || sortSize)) {
         const orgTarget = getOrganizedDropTarget(state, container, sortColor, sortSize);
         if (orgTarget) return orgTarget;
-        
-        // Cannot organize (full). Drop onto own platform!
-        const dx = (Math.random() - 0.5) * 1.2;
-        const dz = (Math.random() - 0.5) * 1.2;
-        return new Vector3(state.position[0] + dx, state.position[1] + 1.1, state.position[2] + dz);
+
+        // Cannot place into destination grid. Fallback to own platform slots.
+        return getSelfPlatformDropTarget(state, selfSort.sortColor, selfSort.sortSize);
     }
 
     return new Vector3(step.pos[0], step.pos[1], step.pos[2]);
@@ -405,7 +600,13 @@ function sph(n: string, d: number, pos: Vector3, mat: PBRMaterial, scene: Scene,
     return m;
 }
 
-export interface StackSlot { worldPos: Vector3; maxStack: number; color: string; }
+export interface StackSlot {
+    worldPos: Vector3;
+    maxStack: number;
+    color: string;
+    col: number;
+    row: number;
+}
 
 export interface CobotState {
     root: TransformNode;
@@ -460,8 +661,9 @@ export interface CobotState {
     pickColors: string[];
     pickSizes: PartSize[];
     linkedCameraIds: string[];
+    autoOrganize: boolean;
     idleTarget: Vector3;
-    stackSlots: StackSlot[];         // back-platform positions
+    stackSlots: StackSlot[];         // top-platform grid positions
     isFull: boolean;
     sensorLights: import("@babylonjs/core").Mesh[];
 }
@@ -490,80 +692,100 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     root.rotation.y = baseRotY;
 
     // ── AMR BODY (fills 2x2 tile, taller & wider) ──────────────────────────
-    const BW = 1.85, BD = 1.85, BH = 1.15;
-    box('chassis',  BW,     BH,     BD,      new Vector3(0, BH/2, 0),      amrBody,  scene, root);
-    // Front white panel (faces +Z in local = direction arm looks)
-    box('fPanel',   BW-0.1, BH-0.15, 0.025, new Vector3(0, BH/2, BD/2-0.01), amrPanel, scene, root);
-    // Side panels
-    box('sPanel1', 0.025, BH-0.15, BD-0.1, new Vector3(BW/2-0.01, BH/2, 0), amrPanel, scene, root);
+    const BW = COBOT_BODY_W, BD = COBOT_BODY_D, BH = COBOT_BODY_H;
+    box('chassis', BW, BH, BD, new Vector3(0, BH / 2, 0), amrBody, scene, root);
+    box('fPanel', BW - 0.1, BH - 0.18, 0.026, new Vector3(0, BH / 2, BD / 2 - 0.012), amrPanel, scene, root);
+    box('bPanel', BW - 0.1, BH - 0.18, 0.026, new Vector3(0, BH / 2, -BD / 2 + 0.012), amrPanel, scene, root);
+    box('sPanel1', 0.026, BH - 0.18, BD - 0.1, new Vector3(BW / 2 - 0.012, BH / 2, 0), amrPanel, scene, root);
+    box('sPanel2', 0.026, BH - 0.18, BD - 0.1, new Vector3(-BW / 2 + 0.012, BH / 2, 0), amrPanel, scene, root);
     // Logo/display on front panel
     const statusDisplayMat = pbr(scene, '#334155', 0, 0.9, alpha);
     if (!isGhost) statusDisplayMat.emissiveColor = new Color3(0.02, 0.03, 0.04);
-    const statusDisplay = box('display', 0.5, 0.28, 0.015, new Vector3(0, BH*0.55, BD/2+0.01), statusDisplayMat, scene, root);
-    box('display2', 0.5, 0.28, 0.015, new Vector3(0, BH*0.55, -BD/2-0.01), statusDisplayMat, scene, root);
-    box('display3', 0.015, 0.28, 0.5, new Vector3(BW/2+0.01, BH*0.55, 0), statusDisplayMat, scene, root);
-    box('display4', 0.015, 0.28, 0.5, new Vector3(-BW/2-0.01, BH*0.55, 0), statusDisplayMat, scene, root);
+    const statusDisplay = box('display', 0.56, 0.3, 0.016, new Vector3(0, BH * 0.56, BD / 2 + 0.01), statusDisplayMat, scene, root);
+    box('display2', 0.56, 0.3, 0.016, new Vector3(0, BH * 0.56, -BD / 2 - 0.01), statusDisplayMat, scene, root);
+    box('display3', 0.016, 0.3, 0.56, new Vector3(BW / 2 + 0.01, BH * 0.56, 0), statusDisplayMat, scene, root);
+    box('display4', 0.016, 0.3, 0.56, new Vector3(-BW / 2 - 0.01, BH * 0.56, 0), statusDisplayMat, scene, root);
     // Green accent strips on all vertical edges
     const es = 0.035, eh = BH;
-    box('eFL', es, eh, es, new Vector3(-BW/2+0.02, BH/2, BD/2-0.02),  amrAccentG, scene, root);
-    box('eFR', es, eh, es, new Vector3( BW/2-0.02, BH/2, BD/2-0.02),  amrAccentG, scene, root);
-    box('eBL', es, eh, es, new Vector3(-BW/2+0.02, BH/2, -BD/2+0.02), amrAccentG, scene, root);
-    box('eBR', es, eh, es, new Vector3( BW/2-0.02, BH/2, -BD/2+0.02), amrAccentG, scene, root);
+    box('eFL', es, eh, es, new Vector3(-BW / 2 + 0.02, BH / 2, BD / 2 - 0.02), amrAccentG, scene, root);
+    box('eFR', es, eh, es, new Vector3(BW / 2 - 0.02, BH / 2, BD / 2 - 0.02), amrAccentG, scene, root);
+    box('eBL', es, eh, es, new Vector3(-BW / 2 + 0.02, BH / 2, -BD / 2 + 0.02), amrAccentG, scene, root);
+    box('eBR', es, eh, es, new Vector3(BW / 2 - 0.02, BH / 2, -BD / 2 + 0.02), amrAccentG, scene, root);
     // Edge trim on top perimeter
-    box('trimF', BW, 0.04, 0.04, new Vector3(0, BH, BD/2-0.02),  amrEdge, scene, root);
-    box('trimB', BW, 0.04, 0.04, new Vector3(0, BH, -BD/2+0.02), amrEdge, scene, root);
-    box('trimL', 0.04, 0.04, BD, new Vector3(-BW/2+0.02, BH, 0),  amrEdge, scene, root);
-    box('trimR', 0.04, 0.04, BD, new Vector3( BW/2-0.02, BH, 0),  amrEdge, scene, root);
+    box('trimF', BW, 0.04, 0.04, new Vector3(0, BH, BD / 2 - 0.02), amrEdge, scene, root);
+    box('trimB', BW, 0.04, 0.04, new Vector3(0, BH, -BD / 2 + 0.02), amrEdge, scene, root);
+    box('trimL', 0.04, 0.04, BD, new Vector3(-BW / 2 + 0.02, BH, 0), amrEdge, scene, root);
+    box('trimR', 0.04, 0.04, BD, new Vector3(BW / 2 - 0.02, BH, 0), amrEdge, scene, root);
 
     // Wheels (4x side-mounted cylinders)
-    [[-BW/2-0.04, 0.2, 0.5], [BW/2+0.04, 0.2, 0.5],
-     [-BW/2-0.04, 0.2,-0.5], [BW/2+0.04, 0.2,-0.5]].forEach((p, i) => {
+    const wheelY = 0.22;
+    const wheelZ = Math.max(0.46, BD * 0.28);
+    [[-BW / 2 - 0.04, wheelY, wheelZ], [BW / 2 + 0.04, wheelY, wheelZ],
+     [-BW / 2 - 0.04, wheelY, -wheelZ], [BW / 2 + 0.04, wheelY, -wheelZ]].forEach((p, i) => {
         const wm = MeshBuilder.CreateCylinder(`wh${i}`, { diameter: 0.32, height: 0.1, tessellation: 20 }, scene);
         wm.rotation.z = Math.PI / 2; wm.position = new Vector3(p[0], p[1], p[2]);
         wm.material = wheelMat; wm.parent = root;
     });
 
     // ── BACK PLATFORM (clean stacking area) ───────────────────────────────
-    // 4 stack positions in a 2x2 grid at the back half of the AMR top
-    const matrix = item.config?.stackMatrix || [2, 2];
-    const cols = Math.max(1, Math.min(4, matrix[0] || 2));
-    const rows = Math.max(1, Math.min(4, matrix[1] || 2));
-    const startX = -0.12, endX = 0.58;
-    const startZ = -0.62, endZ = -0.05;
-    const stackLocalPos: Vector3[] = [];
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const x = cols > 1 ? startX + (endX - startX) * (c / (cols - 1)) : (startX + endX) / 2;
-            const z = rows > 1 ? startZ + (endZ - startZ) * (r / (rows - 1)) : (startZ + endZ) / 2;
-            stackLocalPos.push(new Vector3(x, BH + 0.02, z));
+    const matrix = item.config?.stackMatrix || [3, 3];
+    const cols = Math.max(1, Math.min(6, Math.round(matrix[0] || 3)));
+    const rows = Math.max(1, Math.min(6, Math.round(matrix[1] || 3)));
+    const usableW = Math.max(0.2, COBOT_PLATFORM_W - COBOT_PLATFORM_MARGIN);
+    const usableD = Math.max(0.2, COBOT_PLATFORM_D - COBOT_PLATFORM_MARGIN);
+    const platMat  = pbr(scene, '#0d1117', 0.05, 0.95, alpha);
+    const gridMat = pbr(scene, '#e2e8f0', 0, 0.65, isGhost ? 0.22 : 0.42);
+    if (!isGhost) gridMat.emissiveColor = Color3.FromHexString('#e2e8f0').scale(0.08);
+    box('topPlat', COBOT_PLATFORM_W, COBOT_PLATFORM_THICKNESS, COBOT_PLATFORM_D, new Vector3(0, BH + COBOT_PLATFORM_THICKNESS / 2, 0), platMat, scene, root);
+    const gridY = COBOT_PLATFORM_TOP_Y + 0.003;
+    for (let c = 0; c <= cols; c++) {
+        const x = -usableW / 2 + usableW * (c / cols);
+        box(`stackGridCol${c}`, 0.016, 0.008, usableD, new Vector3(x, gridY, 0), gridMat, scene, root);
+    }
+    for (let r = 0; r <= rows; r++) {
+        const z = -usableD / 2 + usableD * (r / rows);
+        box(`stackGridRow${r}`, usableW, 0.008, 0.016, new Vector3(0, gridY, z), gridMat, scene, root);
+    }
+    const slotCenterY = COBOT_PLATFORM_TOP_Y + DISC_H / 2;
+    const cellW = usableW / cols;
+    const cellD = usableD / rows;
+    const mountSlot = item.config?.mountSlot || [cols - 1, rows - 1];
+    const mountCol = Math.max(0, Math.min(cols - 1, Math.round(mountSlot[0] ?? (cols - 1))));
+    const mountRow = Math.max(0, Math.min(rows - 1, Math.round(mountSlot[1] ?? (rows - 1))));
+    const mountLocalX = -usableW / 2 + cellW * (mountCol + 0.5);
+    const mountLocalZ = -usableD / 2 + cellD * (mountRow + 0.5);
+    const markerRadius = Math.max(0.06, Math.min(0.2, Math.min(cellW, cellD) * 0.16));
+    const stackLocalPos: Array<{ col: number; row: number; pos: Vector3 }> = [];
+    for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+            const x = -usableW / 2 + cellW * (col + 0.5);
+            const z = -usableD / 2 + cellD * (row + 0.5);
+            stackLocalPos.push({ col, row, pos: new Vector3(x, slotCenterY, z) });
         }
     }
-    const platMat  = pbr(scene, '#0d1117', 0.05, 0.95, alpha);
-    // One large recessed platform panel for the whole back area
-    box('backPlat', 0.88, 0.025, 0.78, new Vector3(0.23, BH + 0.013, -0.33), platMat, scene, root);
-    // Color-owned stack positions.
-    const slotSpacingX = cols > 1 ? (endX - startX) / (cols - 1) : (endX - startX);
-    const slotSpacingZ = rows > 1 ? (endZ - startZ) / (rows - 1) : (endZ - startZ);
-    const markerRadius = Math.max(0.08, Math.min(0.26, Math.min(Math.abs(slotSpacingX), Math.abs(slotSpacingZ)) * 0.34));
-    stackLocalPos.forEach((lp, si) => {
-        const slotColor = STACK_SLOT_COLORS[si % STACK_SLOT_COLORS.length];
+    stackLocalPos.forEach((slot, index) => {
+        if (slot.col === mountCol && slot.row === mountRow) return;
+        const slotColor = STACK_SLOT_COLORS[index % STACK_SLOT_COLORS.length];
         const markMat = pbr(scene, slotColor, 0.1, 0.45, isGhost ? 0.25 : 0.65);
-        if (!isGhost) markMat.emissiveColor = Color3.FromHexString(slotColor).scale(0.15);
-        cyl(`stMark${si}`, markerRadius, 0.012, new Vector3(lp.x, lp.y + 0.007, lp.z), markMat, scene, root);
+        if (!isGhost) markMat.emissiveColor = Color3.FromHexString(slotColor).scale(0.16);
+        cyl(`stMark${index}`, markerRadius, 0.012, new Vector3(slot.pos.x, COBOT_PLATFORM_TOP_Y + 0.007, slot.pos.z), markMat, scene, root);
     });
+    const mountCell = Math.min(cellW, cellD);
+    const pedestalRadius = Math.max(0.17, Math.min(0.26, mountCell * 0.32));
+    const baseRingRadius = Math.max(0.21, Math.min(0.34, mountCell * 0.38));
 
-    // ── ARM MOUNT — FRONT-LEFT corner so arm picks forward over edge, drops backward ──
+    // ── ARM MOUNT — configurable slot within platform grid ──
     const mountBase = new TransformNode('mountBase', scene);
     mountBase.parent = root;
-    mountBase.position = new Vector3(-0.55, BH, 0.55); // front-left on top
+    mountBase.position = new Vector3(mountLocalX, COBOT_PLATFORM_TOP_Y, mountLocalZ);
 
-    // Pedestal / turret base
-    cyl('pedestal', 0.16, 0.14, Vector3.Zero(), amrEdge, scene, mountBase);
+    // Pedestal / turret base sized to one grid cell and lifted higher
+    cyl('pedestal', pedestalRadius, COBOT_PEDESTAL_HEIGHT, new Vector3(0, COBOT_PEDESTAL_HEIGHT / 2, 0), amrEdge, scene, mountBase);
 
     const basePivot = new TransformNode('basePivot', scene);
     basePivot.parent = mountBase;
-    basePivot.position.y = 0.07;
-    cyl('baseRing', 0.22, 0.08, Vector3.Zero(), jointMat, scene, basePivot);
+    basePivot.position.y = COBOT_BASE_PIVOT_Y;
+    cyl('baseRing', baseRingRadius, 0.075, new Vector3(0, 0.01, 0), jointMat, scene, basePivot);
 
     // ── LINK 1 — upper arm ────────────────────────────────────────────────
     const shoulder = new TransformNode('shoulder', scene);
@@ -632,9 +854,15 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     collisionSphere.material = mat;
     collisionSphere.isPickable = false;
 
-    // Visual sensor cams (3x around wrist)
+    // Visual proximity sensors (4-way around wrist: front/right/back/left)
     const sensorLights: Mesh[] = [];
-    for (let i = 0; i < 3; i++) {
+    const sensorOffsets: Array<[number, number, number]> = [
+        [0, 0.1, 0.13],   // front
+        [0.13, 0.1, 0],   // right
+        [0, 0.1, -0.13],  // back
+        [-0.13, 0.1, 0],  // left
+    ];
+    for (let i = 0; i < sensorOffsets.length; i++) {
         const camMat = new StandardMaterial(`camMat_${item.id}_${i}`, scene);
         camMat.emissiveColor = Color3.FromHexString('#22c55e');
         camMat.disableLighting = true;
@@ -644,9 +872,7 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         camMesh.material = camMat;
         camMesh.parent = wristRoll;
         
-        const angle = (i * Math.PI * 2) / 3;
-        const radius = 0.12;
-        camMesh.position.set(Math.cos(angle) * radius, 0.1, Math.sin(angle) * radius);
+        camMesh.position.set(sensorOffsets[i][0], sensorOffsets[i][1], sensorOffsets[i][2]);
         sensorLights.push(camMesh);
     }
 
@@ -660,20 +886,20 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     // Compute world positions of the stack slots (apply root rotation)
     const maxStack = item.config?.stackMax || 10;
     
-    const stackLocalPos2: Vector3[] = [];
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const x = cols > 1 ? startX + (endX - startX) * (c / (cols - 1)) : (startX + endX) / 2;
-            const z = rows > 1 ? startZ + (endZ - startZ) * (r / (rows - 1)) : (startZ + endZ) / 2;
-            stackLocalPos2.push(new Vector3(x, BH + 0.04, z));
-        }
-    }
-
-    const stackSlots: StackSlot[] = stackLocalPos2.map((lp, index) => {
+    const stackSlots: StackSlot[] = stackLocalPos
+        .filter(slot => !(slot.col === mountCol && slot.row === mountRow))
+        .map((slot, index) => {
+        const lp = slot.pos;
         const wx = item.position[0] + lp.x * Math.cos(baseRotY) + lp.z * Math.sin(baseRotY);
         const wy = item.position[1] + lp.y;
         const wz = item.position[2] - lp.x * Math.sin(baseRotY) + lp.z * Math.cos(baseRotY);
-        return { worldPos: new Vector3(wx, wy, wz), maxStack, color: STACK_SLOT_COLORS[index % STACK_SLOT_COLORS.length] };
+        return {
+            worldPos: new Vector3(wx, wy, wz),
+            maxStack,
+            color: STACK_SLOT_COLORS[index % STACK_SLOT_COLORS.length],
+            col: slot.col,
+            row: slot.row,
+        };
     });
 
     const state: CobotState = {
@@ -704,9 +930,33 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         pickColors: item.config?.pickColors || [],
         pickSizes: item.config?.pickSizes || [],
         linkedCameraIds: item.config?.linkedCameraIds || [],
+        autoOrganize: item.config?.autoOrganize === true,
         idleTarget, stackSlots, isFull: false
     };
     return { node: root, state };
+}
+
+function selfSortPreferences(state: CobotState) {
+    return {
+        sortColor: state.selfItem?.config?.defaultDropSortColor !== false,
+        sortSize: state.selfItem?.config?.defaultDropSortSize !== false,
+    };
+}
+
+function nearestSelfSlotIndex(state: CobotState, x: number, z: number, maxDist = 0.34): number {
+    let bestIdx = -1;
+    let bestDistSq = maxDist * maxDist;
+    for (let i = 0; i < state.stackSlots.length; i++) {
+        const slot = state.stackSlots[i];
+        const dx = slot.worldPos.x - x;
+        const dz = slot.worldPos.z - z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
 }
 
 function findItemToOrganize(state: CobotState) {
@@ -714,15 +964,59 @@ function findItemToOrganize(state: CobotState) {
     state.mountBase.computeWorldMatrix(true);
     const mountPos = state.mountBase.getAbsolutePosition();
     const allItems = simState.items.filter(i => i.state === 'free');
-    
+    const selfSort = selfSortPreferences(state);
+
+    // First rule: when idle-organize is enabled, keep own platform sorted whenever possible.
+    if ((selfSort.sortColor || selfSort.sortSize) && state.stackSlots.length > 0) {
+        let bestTask: {
+            item: SimItem;
+            sortColor: boolean;
+            sortSize: boolean;
+            dropPos: [number, number, number];
+            score: number;
+        } | null = null;
+        for (const item of allItems) {
+            if (Vector3.Distance(mountPos, item.pos) > reachRadius) continue;
+            if (nearestSelfSlotIndex(state, item.pos.x, item.pos.z) < 0) continue;
+            const dropTarget = getSelfPlatformDropTarget(
+                state,
+                selfSort.sortColor,
+                selfSort.sortSize,
+                { color: item.color, size: item.size },
+                item
+            );
+            if (!dropTarget) continue;
+            const planar = Math.sqrt((item.pos.x - dropTarget.x) ** 2 + (item.pos.z - dropTarget.z) ** 2);
+            const vertical = Math.abs(item.pos.y - dropTarget.y);
+            const needMove = planar > 0.09 || vertical > 0.05;
+            if (!needMove) continue;
+            const score = planar * 2 + vertical + Vector3.Distance(item.pos, mountPos) * 0.05;
+            if (!bestTask || score > bestTask.score) {
+                bestTask = {
+                    item,
+                    sortColor: selfSort.sortColor,
+                    sortSize: selfSort.sortSize,
+                    dropPos: [dropTarget.x, dropTarget.y, dropTarget.z],
+                    score
+                };
+            }
+        }
+        if (bestTask) {
+            return {
+                item: bestTask.item,
+                sortColor: bestTask.sortColor,
+                sortSize: bestTask.sortSize,
+                dropPos: bestTask.dropPos,
+            };
+        }
+    }
+
     // Find matching destinations first
     const dests = factoryStore.getState().placedItems.filter(p => 
         ['receiver', 'table', 'pile', 'indexed_receiver'].includes(p.type) && 
         (p.config?.acceptColor !== 'any' || p.config?.acceptSize !== 'any') &&
         Vector3.Distance(mountPos, new Vector3(p.position[0], mountPos.y, p.position[2])) < reachRadius + 0.5
     );
-
-    if (dests.length === 0) return null;
 
     for (const item of allItems) {
         if (Vector3.Distance(mountPos, item.pos) > reachRadius) continue;
@@ -747,12 +1041,29 @@ function findItemToOrganize(state: CobotState) {
         
         if (isNeat) continue; // Already neatly on some matching destination!
 
-        // Find a valid destination for this item
+        // Find a valid destination for this item with an actual free/matching drop slot.
         for (const dest of dests) {
             const matchesColor = !dest.config?.acceptColor || dest.config.acceptColor === 'any' || dest.config.acceptColor === item.color;
             const matchesSize = !dest.config?.acceptSize || dest.config.acceptSize === 'any' || dest.config.acceptSize === item.size;
             if (matchesColor && matchesSize) {
-                return { item, dest };
+                const sortColor = !!dest.config?.acceptColor && dest.config.acceptColor !== 'any';
+                const sortSize = !!dest.config?.acceptSize && dest.config.acceptSize !== 'any';
+                const dropTarget = getOrganizedDropTarget(
+                    state,
+                    dest,
+                    sortColor,
+                    sortSize,
+                    { color: item.color, size: item.size },
+                    item
+                );
+                if (!dropTarget) continue;
+                return {
+                    item,
+                    dest,
+                    sortColor,
+                    sortSize,
+                    dropPos: [dropTarget.x, dropTarget.y, dropTarget.z] as [number, number, number],
+                };
             }
         }
     }
@@ -767,11 +1078,15 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
 
     state.mountBase.computeWorldMatrix(true);
     const mountPos = state.mountBase.getAbsolutePosition().clone();
-    mountPos.y += 0.11; // top of pedestal + basePivot offset
+    mountPos.y += COBOT_MOUNT_REACH_OFFSET; // top of pedestal + basePivot offset
 
     const isStopped = state.selfItem?.config?.isStopped;
     
     if (!isRunning) {
+        if (state.selfItem?.id) {
+            delete simState.cobotWrists[state.selfItem.id];
+            delete simState.cobotArmSamples[state.selfItem.id];
+        }
         state.desiredTarget.copyFrom(state.idleTarget);
         state.ikVelocity.setAll(0);
         state.wristRollTarget = 0;
@@ -800,6 +1115,20 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             state.desiredTarget.copyFrom(state.idleTarget);
         }
         return !!(state.safetyStopped || isStopped);
+    } else if (!state.autoOrganize && state.isAutoProgram) {
+        // Idle organize was turned off by user: abort generated work immediately.
+        if (state.targetedItem?.state === 'targeted') state.targetedItem.state = 'free';
+        if (state.grabbedItem) state.grabbedItem.state = 'free';
+        state.targetedItem = null;
+        state.grabbedItem = null;
+        state.autoDropTarget = null;
+        state.program = [];
+        state.isAutoProgram = false;
+        state.stepIndex = 0;
+        state.phase = 'idle';
+        state.desiredTarget.copyFrom(state.idleTarget);
+        state.ikVelocity.setAll(0);
+        return false;
     } else if (state.program.length > 0) {
         const distToTarget = Vector3.Distance(state.ikTarget, state.desiredTarget);
         let reachRadius = 0.05;
@@ -823,21 +1152,14 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         const hasDrop = state.program.some(s => s.action === 'drop');
         const needsVision = state.pickColors.length > 0 || state.pickSizes.length > 0;
 
-        const slotAcceptsColor = (slotIndex: number, color: string) => {
-            const slot = state.stackSlots[slotIndex];
-            if (slotCounts[slotIndex] >= slot.maxStack) return false;
-            return slotItems[slotIndex].every(item => item.color === color);
-        };
-
-        const getAutoSlot = (color: string): Vector3 | null => {
-            let idx = state.stackSlots.findIndex((_, i) => slotCounts[i] > 0 && slotCounts[i] < state.stackSlots[i].maxStack && slotItems[i].every(item => item.color === color));
-            if (idx < 0) {
-                idx = state.stackSlots.findIndex((_, i) => slotCounts[i] === 0);
-            }
-            if (idx < 0) return null;
-            const sl = state.stackSlots[idx];
-            const stackTop = topOfPileAt(sl.worldPos.x, sl.worldPos.z, sl.worldPos.y, state.grabbedItem, STACK_R);
-            return new Vector3(sl.worldPos.x, stackTop, sl.worldPos.z);
+        const selfSort = selfSortPreferences(state);
+        const getAutoSlot = (part: { color: string; size: PartSize }): Vector3 | null => {
+            return getSelfPlatformDropTarget(
+                state,
+                selfSort.sortColor,
+                selfSort.sortSize,
+                { color: part.color, size: part.size }
+            );
         };
         switch (state.phase) {
             case 'idle':
@@ -864,7 +1186,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                                 i.state === 'free' &&
                                 Vector3.Distance(i.pos, stepPos) < 1.55 &&
                                 camOk(i) &&
-                                (hasDrop || getAutoSlot(i.color) !== null) &&
+                                (hasDrop || getAutoSlot({ color: i.color, size: i.size }) !== null) &&
                                 (state.skippedTargetIds[i.id] ?? 0) <= state.simTime
                             )
                             .map(i => {
@@ -897,7 +1219,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                                         i.state === 'free' && 
                                         Vector3.Distance(i.pos, nPos) < 1.55 &&
                                         camOk(i) &&
-                                        (hasDrop || getAutoSlot(i.color) !== null) &&
+                                        (hasDrop || getAutoSlot({ color: i.color, size: i.size }) !== null) &&
                                         (state.skippedTargetIds[i.id] ?? 0) <= state.simTime
                                     );
                                     if (hasPart) {
@@ -1016,7 +1338,9 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     state.grabbedItem = state.targetedItem;
                     state.targetedItem = null;
                     state.targetTimer = 0;
-                    if (!hasDrop) state.autoDropTarget = getAutoSlot(state.grabbedItem.color);
+                    if (!hasDrop) {
+                        state.autoDropTarget = getAutoSlot({ color: state.grabbedItem.color, size: state.grabbedItem.size });
+                    }
                     state.phase = 'lift';
                 } else if (state.waitTimer > 0.24 || state.targetTimer > PICK_TARGET_TIMEOUT || (state.waitTimer > 0.09 && attachContact.horizontalDist > PICK_GRAB_RADIUS) || isUnreachable) {
                     if (state.targetedItem) state.targetedItem.state = 'free';
@@ -1117,17 +1441,19 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     } else {
         state.targetTimer += delta;
         // No program — check for idle auto-organize
-        if (state.config?.autoOrganize && state.phase === 'idle' && state.targetTimer > 1.0) {
+        if (state.autoOrganize && state.phase === 'idle' && state.targetTimer > 1.0) {
             const org = findItemToOrganize(state);
             if (org) {
                 state.program = [
                     { action: 'pick', pos: [org.item.pos.x, org.item.pos.y, org.item.pos.z] },
-                    { action: 'drop', pos: [org.dest.position[0], org.dest.position[1], org.dest.position[2]] }
+                    { action: 'drop', pos: org.dropPos, sortColor: org.sortColor, sortSize: org.sortSize }
                 ];
                 state.isAutoProgram = true;
                 state.stepIndex = 0;
+                state.targetTimer = 0;
             } else {
                 state.desiredTarget.copyFrom(state.idleTarget);
+                state.targetTimer = 0; // Poll periodically, don't spin every frame.
                 state.blockedTimer += delta;
             }
         } else {
@@ -1157,66 +1483,107 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
 
     state.wristRoll.computeWorldMatrix(true);
     const wristPos = state.wristRoll.getAbsolutePosition();
-    if (state.selfItem) simState.cobotWrists[state.selfItem.id] = wristPos.clone();
+    if (state.selfItem) {
+        simState.cobotWrists[state.selfItem.id] = wristPos.clone();
+        simState.cobotArmSamples[state.selfItem.id] = collectArmSamples(state);
+    }
     
     let grabbedRadius = 0.08;
-    if (state.grabbedItem) {
-        if (state.grabbedItem.size === 'small') grabbedRadius = 0.15;
-        else if (state.grabbedItem.size === 'medium') grabbedRadius = 0.22;
-        else if (state.grabbedItem.size === 'large') grabbedRadius = 0.33;
-    }
+    if (state.grabbedItem) grabbedRadius = partRadiusForSize(state.grabbedItem.size);
     
     // Scale the visual collision boundary
     const visualRadius = 0.2 + grabbedRadius;
     state.collisionSphere.scaling.setAll(visualRadius * 2);
 
+    const sensorHeading = state.baseRotY + state.basePivot.rotation.y;
+    const sensorForward = new Vector3(Math.sin(sensorHeading), 0, Math.cos(sensorHeading));
+    const sensorRight = new Vector3(sensorForward.z, 0, -sensorForward.x);
+    let hazardForward = 0;
+    let hazardRight = 0;
+    let hazardBackward = 0;
+    let hazardLeft = 0;
+    const sensorRange = 0.62;
+    const addDirectionalHazard = (point: Vector3, dist: number) => {
+        if (dist >= sensorRange) return;
+        const planar = point.subtract(wristPos);
+        planar.y = 0;
+        const planarDist = planar.length();
+        if (planarDist < 0.0001) return;
+        const dir = planar.scale(1 / planarDist);
+        const strength = clamp((sensorRange - Math.max(0, dist)) / sensorRange, 0, 1);
+        const fDot = Vector3.Dot(dir, sensorForward);
+        const rDot = Vector3.Dot(dir, sensorRight);
+        if (fDot >= 0) hazardForward = Math.max(hazardForward, strength * fDot);
+        else hazardBackward = Math.max(hazardBackward, strength * -fDot);
+        if (rDot >= 0) hazardRight = Math.max(hazardRight, strength * rDot);
+        else hazardLeft = Math.max(hazardLeft, strength * -rDot);
+    };
+
     let closestPoint: Vector3 | null = null;
     let minDist = Infinity;
     
-    // Check placed objects (rough bounding boxes) - ONLY if not in precise phase
-    if (!precisePhase) {
-        for (const item of factoryStore.getState().placedItems) {
+    // Check placed objects (rough bounding boxes) for sensor awareness.
+    for (const item of factoryStore.getState().placedItems) {
         if (item.id === state.selfItem?.id || item.type === 'camera') continue;
         let pad = grabbedRadius, w = 2, d = 2, h = item.config?.machineHeight || 0.538;
         if (item.type === 'table') { [w, d] = item.config?.tableSize || [1.8, 1.8]; h = item.config?.tableHeight || 0.45; }
         else if (item.type === 'belt') { [w, d] = item.config?.beltSize || [2, 2]; h = item.config?.beltHeight || 0.538; }
         else if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) { [w, d] = item.config?.machineSize || [2, 2]; }
-        else if (item.type === 'cobot') { w = 0.8; d = 0.8; pad = 0.2 + grabbedRadius; h = 1.2; }
+        else if (item.type === 'cobot') { w = COBOT_BODY_W; d = COBOT_BODY_D; pad = 0.2 + grabbedRadius; h = COBOT_PLATFORM_TOP_Y; }
         
         const cx = clamp(wristPos.x, item.position[0] - w / 2 - pad, item.position[0] + w / 2 + pad);
         const cz = clamp(wristPos.z, item.position[2] - d / 2 - pad, item.position[2] + d / 2 + pad);
         const cy = clamp(wristPos.y, 0, h + 0.05);
-        const dist = Vector3.Distance(wristPos, new Vector3(cx, cy, cz));
+        const closest = new Vector3(cx, cy, cz);
+        const dist = Vector3.Distance(wristPos, closest);
+        addDirectionalHazard(closest, dist);
         if (dist < minDist) {
             minDist = dist;
-            closestPoint = new Vector3(cx, cy, cz);
-        }
+            closestPoint = closest;
         }
     }
     
-    // Check other cobot arms (wrists)
+    // Check other cobot arms (full sampled arm chain) with short look-ahead.
     const currentItems = factoryStore.getState().placedItems;
-    for (const [id, wPos] of Object.entries(simState.cobotWrists)) {
-        if (!currentItems.some(i => i.id === id)) {
-            delete simState.cobotWrists[id];
-            continue;
+    const lookAheadTime = precisePhase ? 0.08 : 0.22;
+    const predictedWrist = wristPos.add(state.ikVelocity.scale(lookAheadTime));
+    for (const staleId of Object.keys(simState.cobotArmSamples)) {
+        if (!currentItems.some(i => i.id === staleId)) {
+            delete simState.cobotArmSamples[staleId];
+            delete simState.cobotWrists[staleId];
         }
-        if (id === state.selfItem?.id) continue;
-        const dist = Vector3.Distance(wristPos, wPos) - (0.2 + grabbedRadius); // Arm buffer zone
-        if (dist < minDist) {
-            minDist = Math.max(0, dist);
-            const dir = wPos.subtract(wristPos).normalize();
-            closestPoint = wristPos.add(dir.scale(minDist));
+    }
+    for (const [id, armPoints] of Object.entries(simState.cobotArmSamples)) {
+        if (id === state.selfItem?.id || !armPoints?.length) continue;
+        for (const p of armPoints) {
+            const distNow = Vector3.Distance(wristPos, p) - (0.2 + grabbedRadius);
+            const distSoon = Vector3.Distance(predictedWrist, p) - (0.24 + grabbedRadius);
+            const dist = Math.min(distNow, distSoon);
+            if (dist < minDist) {
+                minDist = Math.max(0, dist);
+                const dir = p.subtract(wristPos);
+                if (dir.lengthSquared() > 0.000001) {
+                    dir.normalize();
+                    closestPoint = wristPos.add(dir.scale(minDist));
+                } else {
+                    closestPoint = p.clone();
+                }
+            }
+            addDirectionalHazard(p, dist);
         }
     }
     
-    // Check loose items - ONLY if not in precise phase
-    if (!precisePhase) {
-        for (const item of simState.items) {
+    // Check loose items for sensor awareness.
+    for (const item of simState.items) {
             if (item === state.grabbedItem) continue;
-            let otherRad = 0.15;
-            if (item.size === 'medium') otherRad = 0.22;
-            else if (item.size === 'large') otherRad = 0.33;
+            if (
+                state.selfItem &&
+                itemFootprintHit(state.selfItem, item.pos.x, item.pos.z, 0.02) &&
+                item.pos.y <= machineTopY(state.selfItem) + DISC_H * 8
+            ) {
+                continue;
+            }
+            const otherRad = partRadiusForSize(item.size);
             
             const dy = clamp(wristPos.y, item.pos.y, item.pos.y + DISC_H);
             const dx = wristPos.x - item.pos.x;
@@ -1230,41 +1597,41 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 cz += (dz / len) * rad;
             }
             
-            const dist = Vector3.Distance(wristPos, new Vector3(cx, dy, cz));
+            const closest = new Vector3(cx, dy, cz);
+            const dist = Vector3.Distance(wristPos, closest);
+            addDirectionalHazard(closest, dist);
             if (dist < minDist) {
                 minDist = dist;
-                closestPoint = new Vector3(cx, dy, cz);
+                closestPoint = closest;
             }
-        }
     }
 
-    if (minDist < 0.12) {
-        state.proximityMult = 0.05; // Almost completely stopped
-        const red = Color3.FromHexString('#ef4444');
-        state.proximityMats.forEach(m => m.emissiveColor = red);
-    } else if (minDist < 0.35) {
-        state.proximityMult = 0.35; // Slow down
-        const orange = Color3.FromHexString('#f59e0b');
-        state.proximityMats.forEach(m => m.emissiveColor = orange);
-    } else {
-        state.proximityMult = 1.0;
-        const green = Color3.FromHexString('#22c55e');
-        state.proximityMats.forEach(m => m.emissiveColor = green);
+    const colorForHazard = (hazard: number) => {
+        if (hazard > 0.58) return Color3.FromHexString('#ef4444');
+        if (hazard > 0.24) return Color3.FromHexString('#f59e0b');
+        return Color3.FromHexString('#22c55e');
+    };
+    const sensorHazards = [hazardForward, hazardRight, hazardBackward, hazardLeft];
+    for (let i = 0; i < state.proximityMats.length; i++) {
+        const hz = sensorHazards[Math.min(i, sensorHazards.length - 1)] ?? 0;
+        state.proximityMats[i].emissiveColor = colorForHazard(hz);
     }
+    state.proximityMult = 1.0;
 
     if (closestPoint && minDist < 0.35 && minDist > 0.001) {
+        const avoidanceGain = precisePhase ? 0.45 : 1.0;
         const repulsion = wristPos.subtract(closestPoint);
         repulsion.y *= 2.0; // Favor pushing UP over pushing sideways
         repulsion.normalize();
-        const strength = (0.35 - minDist) * 1.5;
+        const strength = (0.35 - minDist) * 1.5 * avoidanceGain;
         state.desiredTarget.addInPlace(repulsion.scale(strength));
         // Strict clamp to prevent pushing through floor
         state.desiredTarget.y = Math.max(state.desiredTarget.y, state.position[1] + 0.1);
     }
 
-    const cruiseSpeed = (precisePhase ? 2.8 : 5.8) * state.speed * state.proximityMult;
+    const cruiseSpeed = (precisePhase ? 2.8 : 5.8) * state.speed;
     const settleRadius = precisePhase ? 0.2 : 0.5;
-    const accel = (precisePhase ? 8.0 : 5.5) * state.speed * state.proximityMult;
+    const accel = (precisePhase ? 8.0 : 5.5) * state.speed;
     const damping = Math.min(1, (precisePhase ? 6.6 : 4.8) * delta);
 
     let desiredVelocity = Vector3.Zero();
@@ -1274,6 +1641,21 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             ? Math.max(0.12, distanceToTarget / settleRadius)
             : 1;
         desiredVelocity = dir.scale(cruiseSpeed * ramp);
+    }
+    {
+        const avoidanceGain = precisePhase ? 0.45 : 1.0;
+        const planar = new Vector3(desiredVelocity.x, 0, desiredVelocity.z);
+        const forwardComp = Vector3.Dot(planar, sensorForward);
+        const rightComp = Vector3.Dot(planar, sensorRight);
+        const forwardHazard = (forwardComp >= 0 ? hazardForward : hazardBackward) * avoidanceGain;
+        const rightHazard = (rightComp >= 0 ? hazardRight : hazardLeft) * avoidanceGain;
+        const forwardScale = 1 - forwardHazard;
+        const rightScale = 1 - rightHazard;
+        const safePlanar = sensorForward
+            .scale(forwardComp * clamp(forwardScale, 0, 1))
+            .add(sensorRight.scale(rightComp * clamp(rightScale, 0, 1)));
+        desiredVelocity.x = safePlanar.x;
+        desiredVelocity.z = safePlanar.z;
     }
 
     const velocityBlend = Math.min(1, accel * delta);
@@ -1296,11 +1678,20 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     const worldYaw = Math.atan2(tx, tz);
     state.basePivot.rotation.y = worldYaw - state.baseRotY;
 
-    // Wrist joint target (L3 points straight down)
-    const wx = tx;
+    // Wrist joint target (L3 points straight down), with self-clearance around base axis.
+    let wx = tx;
     const wy = ty + L3;
-    const wz = tz;
-    
+    let wz = tz;
+
+    const rawPlanarDist = Math.sqrt(wx * wx + wz * wz);
+    if (rawPlanarDist > 0.0001 && rawPlanarDist < IK_BASE_CLEARANCE_RADIUS) {
+        const scale = IK_BASE_CLEARANCE_RADIUS / rawPlanarDist;
+        wx *= scale;
+        wz *= scale;
+    } else if (rawPlanarDist <= 0.0001) {
+        wz = IK_BASE_CLEARANCE_RADIUS;
+    }
+
     const planarDist = Math.sqrt(wx * wx + wz * wz);
     const reach    = Math.sqrt(planarDist * planarDist + wy * wy);
     const clampedR = Math.min(reach, L1 + L2 - 0.01);
@@ -1311,8 +1702,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     const alpha2 = Math.atan2(wy, planarDist);
     const beta2  = Math.acos(clamp((clampedR * clampedR + L1 * L1 - L2 * L2) / (2 * clampedR * L1), -1, 1));
 
-    const sh = Math.PI / 2 - alpha2 - beta2;
-    const el = elbowAngle;
+    const sh = clamp(Math.PI / 2 - alpha2 - beta2, IK_SHOULDER_MIN, IK_SHOULDER_MAX);
+    const el = clamp(elbowAngle, IK_ELBOW_MIN, IK_ELBOW_MAX);
     const wr = Math.PI - sh - el;
     const toolNormalPhase = precisePhase || !!state.grabbedItem;
     const targetToolNormalBlend = toolNormalPhase ? 1.0 : 0.0;
@@ -1321,8 +1712,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     state.toolNormalBlend += (targetToolNormalBlend - state.toolNormalBlend) * Math.min(1, delta * 12 * state.speed);
 
     const blend = state.toolNormalBlend;
-    const wristPitch = wr * (0.72 + 0.28 * blend);
-    const handPitchAngle = wr * (0.28 - 0.28 * blend);
+    const wristPitch = clamp(wr * (0.72 + 0.28 * blend), IK_WRIST_MIN, IK_WRIST_MAX);
+    const handPitchAngle = clamp(wr * (0.28 - 0.28 * blend), -IK_WRIST_MAX, IK_WRIST_MAX);
 
     state.shoulder.rotation.x = sh;
     state.elbow.rotation.x    = el;

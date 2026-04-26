@@ -1,13 +1,17 @@
 import { Vector3 } from '@babylonjs/core';
-import { PartSize } from './types';
+import { PartShape, PartSize } from './types';
 
 export interface SimItem {
     id: string;
+    templateId?: string;
+    shape: PartShape;
     pos: Vector3;
     rotY: number;
     state: 'free' | 'targeted' | 'grabbed' | 'dead';
     color: string;
     size: PartSize;
+    hasCenterHole?: boolean;
+    hasIndexHole?: boolean;
     meshIndex?: number; // which pool slot this occupies
 }
 
@@ -26,9 +30,11 @@ export const simState = {
     items: [] as SimItem[],
     cameraDetections: [] as CameraDetection[],
     cobotWrists: {} as Record<string, Vector3>,
+    cobotArmSamples: {} as Record<string, Vector3[]>,
     reset: () => {
         simState.items = [];
         simState.cameraDetections = [];
         simState.cobotWrists = {};
+        simState.cobotArmSamples = {};
     }
 };

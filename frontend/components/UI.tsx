@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, MapPin, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, Menu, Download, Upload } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload } from 'lucide-react';
 import { useFactoryStore } from '../store';
-import { ITEM_COSTS, ItemType, Direction, PartSize, ProgramAction, ProgramStep } from '../types';
+import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep } from '../types';
 import { simState } from '../simState';
 
 const PICK_COLORS = [
@@ -11,6 +11,15 @@ const PICK_COLORS = [
     { label: 'Yellow', value: '#f59e0b' },
 ];
 const PICK_SIZES: PartSize[] = ['small', 'medium', 'large'];
+const PART_SHAPES: PartShape[] = ['disc', 'can', 'box', 'pyramid'];
+const PART_COLORS = [
+    { label: 'Red', value: '#ef4444' },
+    { label: 'Blue', value: '#3b82f6' },
+    { label: 'Green', value: '#10b981' },
+    { label: 'Yellow', value: '#f59e0b' },
+    { label: 'Slate', value: '#94a3b8' },
+    { label: 'Purple', value: '#a855f7' },
+];
 const PROGRAM_ACTIONS: ProgramAction[] = ['move', 'pick', 'drop', 'wait'];
 const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { label: string, value: number, min: number, max: number, step: number, onChange: (val: number) => void, isWidth?: boolean }) => {
     const handleWheel = (e: React.WheelEvent) => {
@@ -43,17 +52,21 @@ const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { labe
 export const UI: React.FC = () => {
     const [showVisionConfig, setShowVisionConfig] = useState(false);
     const [showController, setShowController] = useState(false);
-    const [showMainOptions, setShowMainOptions] = useState(true);
+    const [showTransforms, setShowTransforms] = useState(false);
     const [snapInputs, setSnapInputs] = useState(true);
     const [editingName, setEditingName] = useState(false);
     const [draftName, setDraftName] = useState('');
     const [activeGroup, setActiveGroup] = useState<string | null>(null);
     const [playClicks, setPlayClicks] = useState({ count: 0, time: 0 });
+    const [showPartCreator, setShowPartCreator] = useState(false);
+    const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
     const { 
         credits, 
         score,
         isRunning,
+        isPaused,
         setIsRunning,
+        setIsPaused,
         buildMode,
         setBuildMode,
         selectedItemId,
@@ -67,16 +80,21 @@ export const UI: React.FC = () => {
         setCredits,
         resetFactory,
         simSpeedMult,
-        setSimSpeedMult
+        setSimSpeedMult,
+        partTemplates,
+        addPartTemplate,
+        updatePartTemplate,
+        removePartTemplate,
+        clonePartTemplate
     } = useFactoryStore();
 
     const selectedItem = placedItems.find(i => i.id === selectedItemId);
-    const layoutConfigTypes: ItemType[] = ['belt', 'table', 'cobot', 'sender', 'receiver', 'indexed_receiver', 'pile'];
     const moduleConfigTypes: ItemType[] = ['sender', 'receiver', 'indexed_receiver', 'pile'];
     const cameras = placedItems.filter(i => i.type === 'camera');
     const selectedMachineState = selectedItem ? machineStates[selectedItem.id] : undefined;
     const selectedLabel = selectedItem?.name || selectedItem?.id || '';
     const teachMinimized = !!teachAction && selectedItem?.type === 'cobot';
+    const activeTemplate = partTemplates.find(t => t.id === activeTemplateId) || null;
 
     useEffect(() => {
         setEditingName(false);
@@ -86,6 +104,16 @@ export const UI: React.FC = () => {
             setShowController(false);
         }
     }, [selectedItemId, selectedItem?.name, selectedItem?.id, selectedItem?.type, teachAction]);
+
+    useEffect(() => {
+        if (partTemplates.length === 0) {
+            setActiveTemplateId(null);
+            return;
+        }
+        if (!activeTemplateId || !partTemplates.some(t => t.id === activeTemplateId)) {
+            setActiveTemplateId(partTemplates[0].id);
+        }
+    }, [partTemplates, activeTemplateId]);
     const statusTone = selectedMachineState?.health === 'stopped'
         ? {
             panel: 'border-red-500/60',
@@ -111,7 +139,12 @@ export const UI: React.FC = () => {
                 };
 
     const handlePlayClick = () => {
-        setIsRunning(!isRunning);
+        if (!isRunning) {
+            setIsRunning(true);
+            setIsPaused(false);
+        } else {
+            setIsPaused(!isPaused);
+        }
         const now = Date.now();
         if (now - playClicks.time < 500) {
             const newCount = playClicks.count + 1;
@@ -127,7 +160,12 @@ export const UI: React.FC = () => {
     };
 
     const handleStopClick = () => {
+        if (isRunning || isPaused) {
+            const ok = window.confirm('Reset simulation and clear all moving parts?');
+            if (!ok) return;
+        }
         setIsRunning(false);
+        setIsPaused(false);
         simState.reset();
         useFactoryStore.getState().placedItems.forEach(item => {
             if (item.type === 'cobot') {
@@ -149,6 +187,21 @@ export const UI: React.FC = () => {
 
     const handleRotateSelected = () => {
         if (selectedItem) {
+            if (selectedItem.type === 'cobot') {
+                const grid = selectedItem.config?.stackMatrix || [3, 3];
+                const cols = Math.max(1, Math.min(6, Math.round(grid[0] || 3)));
+                const rows = Math.max(1, Math.min(6, Math.round(grid[1] || 3)));
+                const [curColRaw, curRowRaw] = selectedItem.config?.mountSlot || [cols - 1, rows - 1];
+                const curCol = Math.max(0, Math.min(cols - 1, Math.round(curColRaw)));
+                const curRow = Math.max(0, Math.min(rows - 1, Math.round(curRowRaw)));
+                const total = cols * rows;
+                const currentIndex = curRow * cols + curCol;
+                const nextIndex = (currentIndex + 1) % total;
+                const nextCol = nextIndex % cols;
+                const nextRow = Math.floor(nextIndex / cols);
+                updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, mountSlot: [nextCol, nextRow] } });
+                return;
+            }
             const newRot = ((selectedItem.rotation + 1) % 4) as Direction;
             updatePlacedItem(selectedItem.id, { rotation: newRot });
         }
@@ -201,7 +254,14 @@ export const UI: React.FC = () => {
         const lastPos = current.slice().reverse().find(step => step.pos)?.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]];
         const nextStep: ProgramStep = action === 'wait'
             ? { action, duration: 0.4 }
-            : { action, pos: [...lastPos] as [number, number, number] };
+            : action === 'drop'
+                ? {
+                    action,
+                    pos: [...lastPos] as [number, number, number],
+                    sortColor: selectedItem.config?.defaultDropSortColor !== false,
+                    sortSize: selectedItem.config?.defaultDropSortSize !== false,
+                }
+                : { action, pos: [...lastPos] as [number, number, number] };
         updateProgram([...current, nextStep]);
     };
 
@@ -231,6 +291,21 @@ export const UI: React.FC = () => {
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, ...patch } });
     };
 
+    const setDropSortPreference = (field: 'sortColor' | 'sortSize', checked: boolean) => {
+        if (!selectedItem) return;
+        const key = field === 'sortColor' ? 'defaultDropSortColor' : 'defaultDropSortSize';
+        const nextProgram = (selectedItem.config?.program || []).map(step =>
+            step.action === 'drop' ? { ...step, [field]: checked } : step
+        );
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                ...selectedItem.config,
+                [key]: checked,
+                program: nextProgram,
+            }
+        });
+    };
+
     const patchSelectedPosition = (axis: 0 | 1 | 2, value: number) => {
         if (!selectedItem) return;
         const next = [...selectedItem.position] as [number, number, number];
@@ -241,6 +316,8 @@ export const UI: React.FC = () => {
     const snapStep = snapInputs ? 0.5 : 0.1;
     const heightStep = snapInputs ? 0.5 : 0.05;
     const snapValue = (value: number, step = snapStep) => snapInputs ? Math.round(value / step) * step : value;
+    const controllerSortColor = selectedItem?.config?.defaultDropSortColor !== false;
+    const controllerSortSize = selectedItem?.config?.defaultDropSortSize !== false;
 
     const unlockSelectedCobot = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
@@ -258,6 +335,43 @@ export const UI: React.FC = () => {
     const patchMachineHeight = (value: number) => {
         if (!selectedItem) return;
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, machineHeight: Math.max(0.1, snapValue(value || 0.1, heightStep)) } });
+    };
+
+    const openPartCreator = () => {
+        setShowPartCreator(true);
+        if (!activeTemplateId && partTemplates[0]) setActiveTemplateId(partTemplates[0].id);
+    };
+
+    const createTemplate = () => {
+        const id = addPartTemplate({
+            name: `Custom ${partTemplates.length + 1}`,
+            shape: 'disc',
+            color: '#94a3b8',
+            size: 'medium',
+            hasCenterHole: true,
+            hasIndexHole: true,
+        });
+        setActiveTemplateId(id);
+    };
+
+    const cloneActiveTemplate = () => {
+        if (!activeTemplate) return;
+        const id = clonePartTemplate(activeTemplate.id);
+        if (id) setActiveTemplateId(id);
+    };
+
+    const removeActiveTemplate = () => {
+        if (!activeTemplate || partTemplates.length <= 1) return;
+        const currentIndex = partTemplates.findIndex(t => t.id === activeTemplate.id);
+        const remaining = partTemplates.filter(t => t.id !== activeTemplate.id);
+        removePartTemplate(activeTemplate.id);
+        const fallback = remaining[Math.max(0, currentIndex - 1)] || remaining[0] || null;
+        setActiveTemplateId(fallback?.id || null);
+    };
+
+    const patchActiveTemplate = (updates: Parameters<typeof updatePartTemplate>[1]) => {
+        if (!activeTemplate) return;
+        updatePartTemplate(activeTemplate.id, updates);
     };
 
 
@@ -278,8 +392,8 @@ export const UI: React.FC = () => {
                 {selectedItem.type === 'pile' && (
                     <div className="flex flex-col gap-3 mt-1">
                         <div className="grid grid-cols-2 gap-3">
-                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 2] } })} />
-                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, v] } })} />
+                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
+                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
                         </div>
                         <div className="grid grid-cols-2 gap-3 items-end">
                             <RangeSlider label="STARTING ITEMS" min={0} max={24} step={1} value={selectedItem.config?.pileCount ?? 0} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, pileCount: v } })} />
@@ -425,11 +539,11 @@ export const UI: React.FC = () => {
                             </div>
                         )}
 
-                        <div className="flex items-start justify-between gap-6">
+                        <div className="flex items-start justify-between gap-3">
                             {/* Specific Configs */}
                             <div className="flex flex-col gap-1.5 flex-1">
-                                <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden flex flex-col gap-1.5 px-2 pb-2">
-                                    <div className="pt-2 flex flex-col gap-1.5 w-full">
+                                <div className={`rounded-lg overflow-hidden flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'bg-transparent px-0 pb-0' : 'bg-gray-800/50 border border-gray-700 px-2 pb-2'}`}>
+                                    <div className={`flex flex-col gap-1.5 w-full ${selectedItem.type === 'cobot' ? '' : 'pt-2'}`}>
                                         {!teachMinimized && renderModuleLayoutControls()}
                                 {selectedItem.type === 'sender' && !teachMinimized && (
                                     <div className="flex flex-col gap-2 w-full">
@@ -442,6 +556,27 @@ export const UI: React.FC = () => {
                                             value={selectedItem.config?.speed || 3} 
                                             onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: parseFloat(e.target.value) } })} 
                                         />
+                                        <div className="flex items-center justify-between mt-2 gap-2">
+                                            <span className="text-xs font-bold text-gray-500">PART TEMPLATE</span>
+                                            <button
+                                                onClick={openPartCreator}
+                                                className="px-2 py-1 rounded border border-cyan-600/50 bg-cyan-500/10 text-cyan-200 text-[10px] font-bold hover:bg-cyan-500/20"
+                                            >
+                                                PART CREATOR
+                                            </button>
+                                        </div>
+                                        <select
+                                            className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
+                                            value={selectedItem.config?.spawnTemplateId || 'any'}
+                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnTemplateId: e.target.value } })}
+                                        >
+                                            <option value="any">Any Template (Random)</option>
+                                            {partTemplates.map(tpl => (
+                                                <option key={tpl.id} value={tpl.id}>
+                                                    {tpl.name} ({tpl.shape}, {tpl.size})
+                                                </option>
+                                            ))}
+                                        </select>
                                         <div className="flex justify-between mt-2">
                                             <span className="text-xs font-bold text-gray-500">ITEM COLOR</span>
                                         </div>
@@ -517,8 +652,8 @@ export const UI: React.FC = () => {
                                             <RangeSlider label="HEIGHT" min={0.25} max={1.2} step={heightStep} value={selectedItem.config?.tableHeight || 0.45} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableHeight: snapValue(v, heightStep) } })} />
                                         </div>
                                         <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end mt-2">
-                                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 2] } })} />
-                                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, v] } })} />
+                                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
+                                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
                                             <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-7">
                                                 <span className="text-[10px] font-bold text-gray-500">SHOW</span>
                                                 <input
@@ -543,19 +678,19 @@ export const UI: React.FC = () => {
                                                                 </button>
                                                             </div>
                                                         )}
-                                                        <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden mb-2 mt-1">
+                                                        <div className="rounded-lg overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-fuchsia-950/20">
                                                             <button
                                                                 onClick={() => setShowTransforms(v => !v)}
-                                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left"
+                                                                className={`w-full flex items-center justify-between px-2 py-1.5 text-left bg-fuchsia-900/25 hover:bg-fuchsia-800/35 transition-colors ${showTransforms ? 'border-b border-fuchsia-500/30' : ''}`}
                                                             >
                                                                 <div className="flex items-center gap-2">
-                                                                    <Menu size={14} className="text-pink-400" />
-                                                                    <span className="text-[10px] text-gray-300 font-bold">TRANSFORM & KINEMATICS</span>
+                                                                    <SlidersHorizontal size={14} className="text-fuchsia-300" />
+                                                                    <span className="text-[10px] text-fuchsia-100 font-bold">TRANSFORM & KINEMATICS</span>
                                                                 </div>
-                                                                {showTransforms ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                                                                {showTransforms ? <ChevronDown size={14} className="text-fuchsia-200" /> : <ChevronRight size={14} className="text-fuchsia-200" />}
                                                             </button>
                                                             {showTransforms && (
-                                                                <div className="px-2 pb-2 border-t border-gray-700 flex flex-col gap-1.5 pt-2">
+                                                                <div className="px-2 pb-2 pt-2 flex flex-col gap-1.5">
                                                                     <div className="grid grid-cols-3 gap-3">
                                                                         <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
                                                                         <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
@@ -567,9 +702,9 @@ export const UI: React.FC = () => {
                                                                         <div className="flex flex-col gap-0.5 w-1/2">
                                                                             <span className="text-[9px] font-bold text-gray-500">STACK GRID (WxD)</span>
                                                                             <div className="flex items-center gap-1">
-                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 2] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 3] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
                                                                                 <span className="text-gray-500 text-[10px]">x</span>
-                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 2, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 3, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
                                                                             </div>
                                                                         </div>
                                                                         <div className="flex flex-col gap-0.5 w-1/2">
@@ -587,19 +722,19 @@ export const UI: React.FC = () => {
 
                                 {selectedItem.type === 'cobot' && (
                                     <>
-                                        <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
+                                        <div className="bg-cyan-950/25 rounded-lg border border-cyan-500/35 overflow-hidden">
                                             <button
                                                 onClick={() => setShowVisionConfig(v => !v)}
-                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left"
+                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left bg-cyan-900/20 hover:bg-cyan-800/30 transition-colors"
                                             >
                                                 <div className="flex items-center gap-2">
-                                                    <Camera size={14} className="text-cyan-300" />
-                                                    <span className="text-[10px] text-gray-300 font-bold">VISION & CAMERA LINKS</span>
+                                                    <Camera size={14} className="text-cyan-200" />
+                                                    <span className="text-[10px] text-cyan-100 font-bold">VISION & CAMERA LINKS</span>
                                                 </div>
-                                                {showVisionConfig ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                                                {showVisionConfig ? <ChevronDown size={14} className="text-cyan-200" /> : <ChevronRight size={14} className="text-cyan-200" />}
                                             </button>
                                             {showVisionConfig && (
-                                                <div className="px-2 pb-2 flex flex-col gap-2 border-t border-gray-700">
+                                                <div className="px-2 pb-2 flex flex-col gap-2 border-t border-cyan-500/30">
                                                     <div className="pt-2 flex flex-col gap-1">
                                                         <span className="text-[9px] font-bold text-gray-500">LINKED CAMERAS</span>
                                                         <div className="grid grid-cols-2 gap-1">
@@ -678,21 +813,21 @@ export const UI: React.FC = () => {
                                         </div>
                                         
                                         {/* Programmability UI */}
-                                        <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
+                                        <div className="bg-emerald-950/25 rounded-lg border border-emerald-500/35 overflow-hidden">
                                             <button
                                                 onClick={() => setShowController(v => !v)}
-                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left"
+                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left bg-emerald-900/20 hover:bg-emerald-800/30 transition-colors"
                                             >
                                                 <div className="flex items-center gap-2">
-                                                    <Cpu size={14} className="text-emerald-400" />
-                                                    <span className="text-[10px] text-gray-300 font-bold">ROBOT CONTROLLER</span>
+                                                    <Cpu size={14} className="text-emerald-200" />
+                                                    <span className="text-[10px] text-emerald-100 font-bold">ROBOT CONTROLLER</span>
                                                 </div>
-                                                {showController ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                                                {showController ? <ChevronDown size={14} className="text-emerald-200" /> : <ChevronRight size={14} className="text-emerald-200" />}
                                             </button>
                                             {showController && (
-                                                <div className="px-2 pb-2 border-t border-gray-700 flex flex-col gap-1.5">
-                                                    <div className="pt-2 flex items-center justify-between">
-                                                        <div className="flex flex-wrap gap-1">
+                                                <div className="px-2 pb-2 border-t border-emerald-500/30 flex flex-col gap-1.5">
+                                                    <div className="pt-2 flex items-center justify-between gap-2">
+                                                        <div className="flex flex-wrap items-center gap-1">
                                                             {PROGRAM_ACTIONS.map(action => (
                                                                 <button
                                                                     key={action}
@@ -702,40 +837,29 @@ export const UI: React.FC = () => {
                                                                     + {action}
                                                                 </button>
                                                             ))}
+                                                            <div className="ml-1 pl-2 border-l border-emerald-600/40 flex items-center gap-2">
+                                                                <span className="text-[9px] font-bold text-emerald-200">SORT</span>
+                                                                <label className="flex items-center gap-1 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className="w-3 h-3 accent-[#38bdf8]"
+                                                                        checked={controllerSortColor}
+                                                                        onChange={(e) => setDropSortPreference('sortColor', e.target.checked)}
+                                                                    />
+                                                                    <span className="text-[9px] font-bold text-gray-300">COLOR</span>
+                                                                </label>
+                                                                <label className="flex items-center gap-1 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className="w-3 h-3 accent-[#38bdf8]"
+                                                                        checked={controllerSortSize}
+                                                                        onChange={(e) => setDropSortPreference('sortSize', e.target.checked)}
+                                                                    />
+                                                                    <span className="text-[9px] font-bold text-gray-300">SIZE</span>
+                                                                </label>
+                                                            </div>
                                                         </div>
                                                         <button onClick={handleClearProgram} className="text-[10px] text-red-400 hover:text-red-300">Clear</button>
-                                                    </div>
-
-                                                    <div className="grid grid-cols-2 gap-1 mb-1">
-                                                        <label className="col-span-2 flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-2 py-1">
-                                                            <div className="flex flex-col">
-                                                                <span className="text-[9px] font-bold text-gray-500">IDLE AUTO-ORGANIZE</span>
-                                                                <span className="text-[8px] text-gray-600">Sort nearby items into matching slots when idle</span>
-                                                            </div>
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedItem.config?.autoOrganize === true}
-                                                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, autoOrganize: e.target.checked } })}
-                                                            />
-                                                        </label>
-                                                    </div>
-                                                    <div className="grid grid-cols-2 gap-1">
-                                                        <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-2 py-1">
-                                                            <span className="text-[9px] font-bold text-gray-500">POINT BALLS</span>
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={(selectedItem.config?.showTeachPoints ?? selectedItem.config?.showTeachZones ?? true) !== false}
-                                                                onChange={(e) => setCobotOverlay({ showTeachPoints: e.target.checked })}
-                                                            />
-                                                        </label>
-                                                        <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-2 py-1">
-                                                            <span className="text-[9px] font-bold text-gray-500">ARM RANGE</span>
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={(selectedItem.config?.showArmRange ?? selectedItem.config?.showTeachZones ?? true) !== false}
-                                                                onChange={(e) => setCobotOverlay({ showArmRange: e.target.checked })}
-                                                            />
-                                                        </label>
                                                     </div>
 
                                                     <div className="flex flex-col gap-1 mb-1 max-h-[220px] overflow-y-auto pr-1">
@@ -746,9 +870,20 @@ export const UI: React.FC = () => {
                                                                     <select
                                                                         className="bg-gray-800 text-white text-[10px] rounded px-1 py-0.5 border border-gray-600 outline-none"
                                                                         value={step.action}
-                                                                        onChange={(e) => patchProgramStep(idx, e.target.value === 'wait'
-                                                                            ? { action: e.target.value as ProgramAction, pos: undefined, duration: step.duration ?? 0.4 }
-                                                                            : { action: e.target.value as ProgramAction, pos: step.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]], duration: undefined })}
+                                                                        onChange={(e) => patchProgramStep(
+                                                                            idx,
+                                                                            e.target.value === 'wait'
+                                                                                ? { action: e.target.value as ProgramAction, pos: undefined, duration: step.duration ?? 0.4 }
+                                                                                : e.target.value === 'drop'
+                                                                                    ? {
+                                                                                        action: 'drop',
+                                                                                        pos: step.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]],
+                                                                                        duration: undefined,
+                                                                                        sortColor: controllerSortColor,
+                                                                                        sortSize: controllerSortSize,
+                                                                                    }
+                                                                                    : { action: e.target.value as ProgramAction, pos: step.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]], duration: undefined }
+                                                                        )}
                                                                     >
                                                                         {PROGRAM_ACTIONS.map(action => <option key={action} value={action}>{action.toUpperCase()}</option>)}
                                                                     </select>
@@ -780,19 +915,6 @@ export const UI: React.FC = () => {
                                                                                 />
                                                                             ))}
                                                                         </div>
-                                                                        {step.action === 'drop' && (
-                                                                            <div className="flex items-center gap-4 px-1 pb-1">
-                                                                                <span className="text-[9px] font-bold text-gray-500">ORGANIZE BY:</span>
-                                                                                <label className="flex items-center gap-1 cursor-pointer">
-                                                                                    <input type="checkbox" className="w-3 h-3 accent-[#38bdf8]" checked={step.sortColor !== false} onChange={(e) => patchProgramStep(idx, { sortColor: e.target.checked })} />
-                                                                                    <span className="text-[9px] font-bold text-gray-400">COLOR</span>
-                                                                                </label>
-                                                                                <label className="flex items-center gap-1 cursor-pointer">
-                                                                                    <input type="checkbox" className="w-3 h-3 accent-[#38bdf8]" checked={step.sortSize !== false} onChange={(e) => patchProgramStep(idx, { sortSize: e.target.checked })} />
-                                                                                    <span className="text-[9px] font-bold text-gray-400">SIZE</span>
-                                                                                </label>
-                                                                            </div>
-                                                                        )}
                                                                     </div>
                                                                 )}
                                                             </div>
@@ -899,19 +1021,49 @@ export const UI: React.FC = () => {
                             </div>
 
                             {/* Global Actions */}
-                            <div className="flex flex-col gap-2 min-w-[120px]">
-                                <button 
-                                    onClick={handleRotateSelected}
-                                    className="flex items-center justify-center gap-2 px-4 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-sm font-bold transition-colors"
-                                >
-                                    <RotateCw size={16} /> ROTATE
-                                </button>
-                                <button 
-                                    onClick={handleSellSelected}
-                                    className="flex items-center justify-center gap-2 px-4 py-3 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-lg text-sm font-bold transition-colors"
-                                >
-                                    <Trash2 size={16} /> SELL
-                                </button>
+                            <div className="flex flex-col gap-1.5 min-w-[112px]">
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    <button 
+                                        onClick={handleRotateSelected}
+                                        className="flex items-center justify-center gap-1 px-2 h-9 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-[10px] font-bold transition-colors"
+                                    >
+                                        <RotateCw size={13} /> ROT
+                                    </button>
+                                    <button 
+                                        onClick={handleSellSelected}
+                                        className="flex items-center justify-center gap-1 px-2 h-9 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-lg text-[10px] font-bold transition-colors"
+                                    >
+                                        <Trash2 size={13} /> SELL
+                                    </button>
+                                </div>
+                                {selectedItem.type === 'cobot' && (
+                                    <div className="rounded-lg border border-gray-700 bg-gray-900/50 px-2 py-1.5 flex flex-col gap-1">
+                                        <label className="flex items-center justify-between gap-2">
+                                            <span className="text-[9px] font-bold text-gray-400">IDLE</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedItem.config?.autoOrganize === true}
+                                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, autoOrganize: e.target.checked } })}
+                                            />
+                                        </label>
+                                        <label className="flex items-center justify-between gap-2">
+                                            <span className="text-[9px] font-bold text-gray-400">POINTS</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={(selectedItem.config?.showTeachPoints ?? selectedItem.config?.showTeachZones ?? true) !== false}
+                                                onChange={(e) => setCobotOverlay({ showTeachPoints: e.target.checked })}
+                                            />
+                                        </label>
+                                        <label className="flex items-center justify-between gap-2">
+                                            <span className="text-[9px] font-bold text-gray-400">RANGE</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={(selectedItem.config?.showArmRange ?? selectedItem.config?.showTeachZones ?? true) !== false}
+                                                onChange={(e) => setCobotOverlay({ showArmRange: e.target.checked })}
+                                            />
+                                        </label>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -931,30 +1083,34 @@ export const UI: React.FC = () => {
                             <div className="flex items-center gap-2 mr-2">
                                 <button 
                                     onClick={handlePlayClick}
-                                    className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
-                                    title={isRunning ? "Pause" : "Play (Click 5 times for +10k credits)"}
+                                    className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning && !isPaused ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
+                                    title={!isRunning ? "Play (Click 5 times for +10k credits)" : isPaused ? "Resume" : "Pause"}
                                 >
-                                    {isRunning ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+                                    {isRunning && !isPaused ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
                                 </button>
                                 <button 
                                     onClick={handleStopClick}
                                     className={`flex items-center justify-center p-3 rounded-xl transition-all bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white`}
-                                    title="Stop & Reset Items"
+                                    title="Stop & Reset (asks confirmation)"
                                 >
                                     <Square size={20} fill="currentColor" />
                                 </button>
 
                                 <div className="flex flex-col gap-1 ml-1">
                                     <input 
-                                        type="range" min="1" max="10" step="1" 
-                                        value={simSpeedMult} onChange={e => setSimSpeedMult(parseInt(e.target.value))}
+                                        type="range" min="0.2" max="10" step="0.1"
+                                        value={simSpeedMult}
+                                        onChange={e => {
+                                            const next = parseFloat(e.target.value);
+                                            setSimSpeedMult(Number.isFinite(next) ? next : 1);
+                                        }}
                                         className="w-20 accent-emerald-500 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                                        title={`Speed: ${simSpeedMult}x`}
+                                        title={`Speed: ${simSpeedMult.toFixed(1)}x`}
                                     />
                                     <div className="flex gap-1">
                                         <button onClick={resetFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
-                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v8', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
-                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v9', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
+                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
                                     </div>
                                 </div>
                             </div>
@@ -1006,6 +1162,144 @@ export const UI: React.FC = () => {
 
                         </div>
                     </>
+                )}
+
+                {showPartCreator && (
+                    <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="w-[min(980px,96vw)] max-h-[90vh] rounded-xl border border-cyan-700/40 bg-slate-950 text-slate-100 shadow-2xl flex flex-col overflow-hidden">
+                            <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                                <div>
+                                    <div className="text-sm font-black tracking-wide text-cyan-200">PART CREATOR</div>
+                                    <div className="text-[11px] text-slate-400">Templates for sender spawn. Full CRUD + clone.</div>
+                                </div>
+                                <button onClick={() => setShowPartCreator(false)} className="p-1 rounded hover:bg-slate-800 text-slate-300">
+                                    <X size={18} />
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-[260px_1fr] min-h-0 flex-1">
+                                <div className="border-r border-slate-800 p-3 flex flex-col gap-2 min-h-0">
+                                    <div className="grid grid-cols-3 gap-1">
+                                        <button onClick={createTemplate} className="rounded border border-emerald-500/40 bg-emerald-500/15 text-emerald-200 text-[11px] font-bold py-1 hover:bg-emerald-500/25">NEW</button>
+                                        <button onClick={cloneActiveTemplate} disabled={!activeTemplate} className="rounded border border-blue-500/40 bg-blue-500/15 text-blue-200 text-[11px] font-bold py-1 hover:bg-blue-500/25 disabled:opacity-40">CLONE</button>
+                                        <button onClick={removeActiveTemplate} disabled={!activeTemplate || partTemplates.length <= 1} className="rounded border border-red-500/40 bg-red-500/15 text-red-200 text-[11px] font-bold py-1 hover:bg-red-500/25 disabled:opacity-40">DELETE</button>
+                                    </div>
+                                    <div className="text-[10px] uppercase tracking-wide text-slate-500 mt-1">Templates</div>
+                                    <div className="flex-1 overflow-y-auto flex flex-col gap-1 pr-1">
+                                        {partTemplates.map(tpl => {
+                                            const active = tpl.id === activeTemplateId;
+                                            return (
+                                                <button
+                                                    key={tpl.id}
+                                                    onClick={() => setActiveTemplateId(tpl.id)}
+                                                    className={`text-left rounded border px-2 py-1.5 transition-colors ${active ? 'border-cyan-500 bg-cyan-500/15' : 'border-slate-800 bg-slate-900 hover:bg-slate-800'}`}
+                                                >
+                                                    <div className="text-xs font-bold truncate">{tpl.name}</div>
+                                                    <div className="text-[10px] text-slate-400 uppercase">{tpl.shape} · {tpl.size}</div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="p-4 overflow-y-auto">
+                                    {activeTemplate ? (
+                                        <div className="flex flex-col gap-4">
+                                            <label className="flex flex-col gap-1">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Name</span>
+                                                <input
+                                                    value={activeTemplate.name}
+                                                    onChange={(e) => patchActiveTemplate({ name: e.target.value })}
+                                                    className="bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm outline-none focus:border-cyan-500"
+                                                />
+                                            </label>
+
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Shape</span>
+                                                <div className="grid grid-cols-4 gap-2">
+                                                    {PART_SHAPES.map(shape => (
+                                                        <button
+                                                            key={shape}
+                                                            onClick={() => patchActiveTemplate({ shape })}
+                                                            className={`rounded border px-2 py-1.5 text-[11px] font-bold uppercase ${activeTemplate.shape === shape ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
+                                                        >
+                                                            {shape}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Default Color</span>
+                                                <div className="grid grid-cols-6 gap-2">
+                                                    {PART_COLORS.map(c => (
+                                                        <button
+                                                            key={c.value}
+                                                            onClick={() => patchActiveTemplate({ color: c.value })}
+                                                            title={c.label}
+                                                            className={`h-8 rounded border ${activeTemplate.color === c.value ? 'border-white' : 'border-slate-700'}`}
+                                                            style={{ backgroundColor: c.value }}
+                                                        />
+                                                    ))}
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <input
+                                                        type="color"
+                                                        value={activeTemplate.color}
+                                                        onChange={(e) => patchActiveTemplate({ color: e.target.value })}
+                                                        className="h-8 w-10 rounded border border-slate-700 bg-slate-900 p-0.5"
+                                                    />
+                                                    <input
+                                                        value={activeTemplate.color}
+                                                        onChange={(e) => patchActiveTemplate({ color: e.target.value })}
+                                                        className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono w-28 outline-none focus:border-cyan-500"
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[11px] font-bold text-slate-400 uppercase">Default Size</span>
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    {PICK_SIZES.map(size => (
+                                                        <button
+                                                            key={size}
+                                                            onClick={() => patchActiveTemplate({ size })}
+                                                            className={`rounded border px-2 py-1.5 text-[11px] font-bold uppercase ${activeTemplate.size === size ? 'border-cyan-500 bg-cyan-500/15 text-cyan-100' : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800'}`}
+                                                        >
+                                                            {size}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {activeTemplate.shape === 'disc' && (
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-900 px-3 py-1.5">
+                                                        <span className="text-[11px] font-bold text-slate-300 uppercase">Center Hole</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={activeTemplate.hasCenterHole !== false}
+                                                            onChange={(e) => patchActiveTemplate({ hasCenterHole: e.target.checked })}
+                                                        />
+                                                    </label>
+                                                    <label className="flex items-center justify-between rounded border border-slate-700 bg-slate-900 px-3 py-1.5">
+                                                        <span className="text-[11px] font-bold text-slate-300 uppercase">Index Hole</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={activeTemplate.hasIndexHole !== false}
+                                                            onChange={(e) => patchActiveTemplate({ hasIndexHole: e.target.checked })}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-slate-400">No template selected.</div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 )}
             </div>
         </div>

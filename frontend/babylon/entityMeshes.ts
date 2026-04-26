@@ -2,7 +2,7 @@ import {
     Scene, MeshBuilder, StandardMaterial, Color3, Vector3,
     TransformNode, Mesh, PBRMaterial, CSG
 } from '@babylonjs/core';
-import { PlacedItem } from '../types';
+import { PartShape, PlacedItem } from '../types';
 
 const ROTATION_MAP = [Math.PI, Math.PI / 2, 0, -Math.PI / 2]; // N,E,S,W
 
@@ -45,15 +45,23 @@ function moduleHeight(item: PlacedItem, fallback = 0.538): number {
 
 // ─── PLATE MESH (thin precision part) ───────────────────────────────────────
 
-export function createPlateMesh(scene: Scene, color: string, isGhost = false, namePrefix = 'plate'): Mesh {
+export function createPlateMesh(
+    scene: Scene,
+    color: string,
+    isGhost = false,
+    namePrefix = 'plate',
+    opts?: { hasCenterHole?: boolean; hasIndexHole?: boolean }
+): Mesh {
+    const hasCenterHole = opts?.hasCenterHole !== false;
+    const hasIndexHole = opts?.hasIndexHole !== false;
     const body = MeshBuilder.CreateCylinder(`${namePrefix}_body`, { diameter: 0.6, height: 0.025, tessellation: 32 }, scene);
     const centerCut = MeshBuilder.CreateCylinder(`${namePrefix}_centerCut`, { diameter: 0.10, height: 0.04, tessellation: 24 }, scene);
     const indexCut = MeshBuilder.CreateCylinder(`${namePrefix}_indexCut`, { diameter: 0.055, height: 0.04, tessellation: 18 }, scene);
     indexCut.position.z = 0.19;
 
-    const plateCsg = CSG.FromMesh(body)
-        .subtract(CSG.FromMesh(centerCut))
-        .subtract(CSG.FromMesh(indexCut));
+    let plateCsg = CSG.FromMesh(body);
+    if (hasCenterHole) plateCsg = plateCsg.subtract(CSG.FromMesh(centerCut));
+    if (hasIndexHole) plateCsg = plateCsg.subtract(CSG.FromMesh(indexCut));
 
     const plate = plateCsg.toMesh(`${namePrefix}_mesh`, undefined, scene);
     body.dispose();
@@ -65,6 +73,59 @@ export function createPlateMesh(scene: Scene, color: string, isGhost = false, na
     plate.receiveShadows = true;
     plate.castShadows = true;
     return plate;
+}
+
+export function createPartMesh(
+    scene: Scene,
+    spec: {
+        shape: PartShape;
+        color: string;
+        hasCenterHole?: boolean;
+        hasIndexHole?: boolean;
+    },
+    isGhost = false,
+    namePrefix = 'part'
+): Mesh {
+    const mat = pbr(scene, spec.color, 0.2, 0.45, isGhost ? 0.4 : 1);
+    switch (spec.shape) {
+        case 'disc':
+            return createPlateMesh(scene, spec.color, isGhost, `${namePrefix}_disc`, {
+                hasCenterHole: spec.hasCenterHole,
+                hasIndexHole: spec.hasIndexHole,
+            });
+        case 'can': {
+            const can = MeshBuilder.CreateCylinder(`${namePrefix}_can`, { diameter: 0.56, height: 0.08, tessellation: 32 }, scene);
+            can.material = mat;
+            can.receiveShadows = true;
+            can.castShadows = true;
+            return can;
+        }
+        case 'box': {
+            const bx = MeshBuilder.CreateBox(`${namePrefix}_box`, { width: 0.56, depth: 0.56, height: 0.08 }, scene);
+            bx.material = mat;
+            bx.receiveShadows = true;
+            bx.castShadows = true;
+            return bx;
+        }
+        case 'pyramid': {
+            const py = MeshBuilder.CreateCylinder(`${namePrefix}_pyramid`, {
+                diameterBottom: 0.62,
+                diameterTop: 0.04,
+                height: 0.1,
+                tessellation: 4
+            }, scene);
+            py.rotation.y = Math.PI / 4;
+            py.material = mat;
+            py.receiveShadows = true;
+            py.castShadows = true;
+            return py;
+        }
+        default:
+            return createPlateMesh(scene, spec.color, isGhost, `${namePrefix}_fallback`, {
+                hasCenterHole: spec.hasCenterHole,
+                hasIndexHole: spec.hasIndexHole,
+            });
+    }
 }
 
 // ─── BELT ────────────────────────────────────────────────────────────────────
@@ -202,8 +263,7 @@ export function createIndexedReceiver(item: PlacedItem, scene: Scene, isGhost = 
 export function createPile(item: PlacedItem, scene: Scene, isGhost = false): TransformNode {
     const root = new TransformNode(`pile_${item.id}`, scene);
     root.position = new Vector3(...item.position);
-    const rotAngles = { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 };
-    root.rotation.y = rotAngles[item.rotation] || 0;
+    root.rotation.y = ROTATION_MAP[item.rotation];
 
     const wallMat = pbr(scene, '#44403c', 0, 0.9, isGhost ? 0.4 : 1);
     const floorMat = pbr(scene, '#1c1917', 0, 1, isGhost ? 0.4 : 1);
@@ -226,7 +286,7 @@ export function createPile(item: PlacedItem, scene: Scene, isGhost = false): Tra
     const markMat = pbr(scene, '#e2e8f0', 0, 0.6, isGhost ? 0.25 : 0.45);
     markMat.emissiveColor = Color3.FromHexString('#e2e8f0').scale(0.06);
 
-    const [cols, rows] = item.config?.tableGrid || [2, 2];
+    const [cols, rows] = item.config?.tableGrid || [3, 3];
     const topY = h + 0.022;
     const usableWidth = showWalls ? Math.max(0.2, w - wallT * 4) : w - 0.04;
     const usableDepth = showWalls ? Math.max(0.2, d - wallT * 4) : d - 0.04;
@@ -266,7 +326,7 @@ export function createTable(item: PlacedItem, scene: Scene, isGhost = false): Tr
         box(`leg${i}`, 0.1, legHeight, 0.1, new Vector3(x, legHeight / 2, z), legMat, scene, root);
     });
     if (item.config?.showTableGrid !== false) {
-        const [cols, rows] = item.config?.tableGrid || [2, 2];
+        const [cols, rows] = item.config?.tableGrid || [3, 3];
         const safeCols = Math.max(1, Math.min(6, cols || 2));
         const safeRows = Math.max(1, Math.min(6, rows || 2));
         const topY = tableHeight + 0.006;
@@ -308,8 +368,10 @@ export function createCameraEntity(item: PlacedItem, scene: Scene, isGhost = fal
     const camRoot = new TransformNode('camRoot', scene);
     camRoot.parent = root;
     camRoot.position = new Vector3(-0.9, 3.2, 0.9);
-    camRoot.rotation.y = -Math.PI / 4; // Point diagonally towards center
-    camRoot.rotation.z = 0.38; // Tilt down towards center
+    // Aim from corner mount toward the tile center.
+    const toCenter = new Vector3(-camRoot.position.x, 0, -camRoot.position.z);
+    camRoot.rotation.y = Math.atan2(-toCenter.z, toCenter.x);
+    camRoot.rotation.z = 0.38; // Tilt down toward work surface
 
     box('camBody', 0.3, 0.4, 0.3, new Vector3(0, 0, 0), bodyMat, scene, camRoot);
     cyl('lens', 0.1, 0.15, new Vector3(0, -0.275, 0), lensMat, scene, camRoot);

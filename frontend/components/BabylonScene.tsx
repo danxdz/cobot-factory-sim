@@ -9,22 +9,35 @@ import {
 import HavokPhysics from '@babylonjs/havok';
 import { factoryStore } from '../store';
 import { simState } from '../simState';
-import { MachineRuntimeState, PartSize, PlacedItem } from '../types';
+import { MachineRuntimeState, PartSize, PartTemplate, PlacedItem } from '../types';
 import {
     createBelt, createSender, createReceiver, createIndexedReceiver,
-    createPile, createTable, createCameraEntity, createPlateMesh
+    createPile, createTable, createCameraEntity, createPartMesh
 } from '../babylon/entityMeshes';
 import { createCobot, tickCobot, CobotState } from '../babylon/cobotMesh';
 
 const ITEM_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const ITEM_SIZES: PartSize[] = ['small', 'medium', 'large'];
-const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.54, medium: 0.6, large: 0.66 };
+const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
 const DISC_H = 0.015;
 const DISC_HALF_H = DISC_H / 2;
-const DISC_RADIUS = 0.3;
+const DISC_RADIUS = SIZE_DIAMETER.large / 2;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
-const COBOT_PLATFORM_CENTER_Y = 1.198;
+const COBOT_PLATFORM_CENTER_Y = 1.378;
+const COBOT_PLATFORM_HALF_W = 0.99;
+const COBOT_PLATFORM_HALF_D = 0.99;
+const COBOT_PLATFORM_MARGIN = 0.16;
+const COBOT_MOUNT_RANGE_Y = 1.58;
+const FALLBACK_PART_TEMPLATE: PartTemplate = {
+    id: 'fallback_disc',
+    name: 'Disk',
+    shape: 'disc',
+    color: '#94a3b8',
+    size: 'medium',
+    hasCenterHole: true,
+    hasIndexHole: true,
+};
 
 function hexToColor3(hex: string): Color3 {
     const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -39,6 +52,31 @@ function randomPartSize(): PartSize {
 
 function partRadius(size: PartSize): number {
     return SIZE_DIAMETER[size] / 2;
+}
+
+function partMeshKeyFor(item: {
+    shape?: string;
+    hasCenterHole?: boolean;
+    hasIndexHole?: boolean;
+}) {
+    return `${item.shape || 'disc'}_${item.hasCenterHole !== false ? 1 : 0}_${item.hasIndexHole !== false ? 1 : 0}`;
+}
+
+function cobotMountLocal(config?: PlacedItem['config']) {
+    const grid = config?.stackMatrix || [3, 3];
+    const cols = Math.max(1, Math.min(6, Math.round(grid[0] || 3)));
+    const rows = Math.max(1, Math.min(6, Math.round(grid[1] || 3)));
+    const mountSlot = config?.mountSlot || [cols - 1, rows - 1];
+    const mountCol = Math.max(0, Math.min(cols - 1, Math.round(mountSlot[0] ?? (cols - 1))));
+    const mountRow = Math.max(0, Math.min(rows - 1, Math.round(mountSlot[1] ?? (rows - 1))));
+    const usableW = Math.max(0.2, COBOT_PLATFORM_HALF_W * 2 - COBOT_PLATFORM_MARGIN);
+    const usableD = Math.max(0.2, COBOT_PLATFORM_HALF_D * 2 - COBOT_PLATFORM_MARGIN);
+    const cellW = usableW / cols;
+    const cellD = usableD / rows;
+    return {
+        x: -usableW / 2 + cellW * (mountCol + 0.5),
+        z: -usableD / 2 + cellD * (mountRow + 0.5),
+    };
 }
 
 export const BabylonScene: React.FC = () => {
@@ -106,6 +144,7 @@ export const BabylonScene: React.FC = () => {
 
         // ── PHYSICS (ground only, parts use manual simulation) ───────────────
         const partMeshes: Mesh[] = [];
+        const partMeshKinds: string[] = [];
         const velY = new Map<number, number>(); // pool index → vertical velocity
 
         HavokPhysics().then((havok) => {
@@ -208,6 +247,7 @@ export const BabylonScene: React.FC = () => {
                 const visualConfigSig = ['cobot', 'belt', 'sender', 'receiver', 'indexed_receiver', 'pile', 'table', 'camera'].includes(item.type)
                     ? JSON.stringify({
                         stackMatrix: item.config?.stackMatrix,
+                        mountSlot: item.config?.mountSlot,
                         stackMax: item.config?.stackMax,
                         beltSize: item.config?.beltSize,
                         beltHeight: item.config?.beltHeight,
@@ -250,6 +290,7 @@ export const BabylonScene: React.FC = () => {
                     cState.pickColors = itm.config?.pickColors || [];
                     cState.pickSizes = itm.config?.pickSizes || [];
                     cState.linkedCameraIds = itm.config?.linkedCameraIds || [];
+                    cState.autoOrganize = itm.config?.autoOrganize === true;
                 }
             }
             const activeCobotIds = new Set(cobotStates.keys());
@@ -332,7 +373,16 @@ export const BabylonScene: React.FC = () => {
             const showPoints = selected?.config?.showTeachPoints ?? selected?.config?.showTeachZones ?? true;
             const showRange = selected?.config?.showArmRange ?? selected?.config?.showTeachZones ?? true;
             const nextSig = selected && selected.type === 'cobot' && (showPoints || showRange)
-                ? JSON.stringify({ id: selected.id, rotation: selected.rotation, position: selected.position, program: selected.config?.program || [], showPoints, showRange })
+                ? JSON.stringify({
+                    id: selected.id,
+                    rotation: selected.rotation,
+                    position: selected.position,
+                    mountSlot: selected.config?.mountSlot,
+                    stackMatrix: selected.config?.stackMatrix,
+                    program: selected.config?.program || [],
+                    showPoints,
+                    showRange,
+                })
                 : '';
             if (nextSig === teachZoneSig) return;
             teachZoneSig = nextSig;
@@ -341,13 +391,14 @@ export const BabylonScene: React.FC = () => {
             const isOnOtherCobot = (pos: [number, number, number]) => st.placedItems.some(item =>
                 item.id !== selected.id &&
                 item.type === 'cobot' &&
-                Math.abs(pos[0] - item.position[0]) <= 1 &&
-                Math.abs(pos[2] - item.position[2]) <= 1
+                Math.abs(pos[0] - item.position[0]) <= COBOT_PLATFORM_HALF_W &&
+                Math.abs(pos[2] - item.position[2]) <= COBOT_PLATFORM_HALF_D
             );
             if (showRange) {
                 const baseRotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][selected.rotation] ?? 0;
-                const localX = -0.55;
-                const localZ = 0.55;
+                const mountLocal = cobotMountLocal(selected.config);
+                const localX = mountLocal.x;
+                const localZ = mountLocal.z;
                 const mountX = selected.position[0] + localX * Math.cos(baseRotY) + localZ * Math.sin(baseRotY);
                 const mountZ = selected.position[2] - localX * Math.sin(baseRotY) + localZ * Math.cos(baseRotY);
                 const range = MeshBuilder.CreateTorus('arm_range_ring', {
@@ -355,7 +406,7 @@ export const BabylonScene: React.FC = () => {
                     thickness: 0.025,
                     tessellation: 96,
                 }, scene);
-                range.position.set(mountX, selected.position[1] + 1.22, mountZ);
+                range.position.set(mountX, selected.position[1] + COBOT_MOUNT_RANGE_Y, mountZ);
                 range.material = armRangeMat;
                 range.isPickable = false;
                 range.parent = teachZoneRoot;
@@ -616,6 +667,9 @@ export const BabylonScene: React.FC = () => {
                 const [w, d] = item.config?.machineSize || [2, 2];
                 return dx <= w / 2 + radius * 0.6 && dz <= d / 2 + radius * 0.6;
             }
+            if (item.type === 'cobot') {
+                return dx <= COBOT_PLATFORM_HALF_W + radius * 0.6 && dz <= COBOT_PLATFORM_HALF_D + radius * 0.6;
+            }
             return dx <= 1.0 + radius * 0.6 && dz <= 1.0 + radius * 0.6;
         }
 
@@ -681,10 +735,10 @@ export const BabylonScene: React.FC = () => {
         let elapsed = 0;
         const lastSpawnTime: Record<string, number> = {};
         scene.registerBeforeRender(() => {
-            const delta = (engine.getDeltaTime() / 1000) * factoryStore.getState().simSpeedMult;
-            elapsed += delta;
             const st = factoryStore.getState();
-            const { isRunning, placedItems } = st;
+            const { isRunning, isPaused, placedItems } = st;
+            const delta = (isRunning && !isPaused) ? ((engine.getDeltaTime() / 1000) * st.simSpeedMult) : 0;
+            elapsed += delta;
             updateTeachZones(st);
             updateCameraHighlights(st);
 
@@ -711,6 +765,15 @@ export const BabylonScene: React.FC = () => {
                 velY.clear();
                 return;
             }
+            if (isPaused) {
+                placedItems.filter(item => item.type === 'cobot').forEach(item => {
+                    const runtime = { health: 'idle', label: 'Paused', detail: 'Simulation paused' } as MachineRuntimeState;
+                    st.setMachineState(item.id, runtime);
+                    const cState = cobotStates.get(item.id);
+                    if (cState) applyCobotStatusVisual(cState, runtime);
+                });
+                return;
+            }
 
             // ── Sender spawn ─────────────────────────────────────────────
             placedItems.forEach(item => {
@@ -719,19 +782,31 @@ export const BabylonScene: React.FC = () => {
                 const interval = item.config?.speed || 3;
                 if (elapsed - last < interval) return;
                 lastSpawnTime[item.id] = elapsed;
+                const templates = st.partTemplates?.length ? st.partTemplates : [FALLBACK_PART_TEMPLATE];
+                const senderTemplateId = item.config?.spawnTemplateId || 'any';
+                const templatePool = senderTemplateId === 'any'
+                    ? templates
+                    : templates.filter(t => t.id === senderTemplateId);
+                const template = templatePool.length > 0
+                    ? templatePool[Math.floor(Math.random() * templatePool.length)]
+                    : templates[Math.floor(Math.random() * templates.length)] || FALLBACK_PART_TEMPLATE;
                 const color = (item.config?.spawnColor && item.config.spawnColor !== 'any')
                     ? item.config.spawnColor
-                    : ITEM_COLORS[Math.floor(Math.random() * ITEM_COLORS.length)];
+                    : (template?.color || ITEM_COLORS[Math.floor(Math.random() * ITEM_COLORS.length)]);
                 const size = item.config?.spawnSize && item.config.spawnSize !== 'any'
                     ? item.config.spawnSize
-                    : randomPartSize();
+                    : (template?.size || randomPartSize());
                 simState.items.push({
                     id: Math.random().toString(36).slice(2),
+                    templateId: template?.id,
+                    shape: template?.shape || 'disc',
                     pos: new Vector3(item.position[0], itemSurfaceCenterY(item) + 0.35, item.position[2]),
                     rotY: Math.random() * Math.PI * 2,
                     state: 'free',
                     color,
                     size,
+                    hasCenterHole: template?.hasCenterHole !== false,
+                    hasIndexHole: template?.hasIndexHole !== false,
                 });
             });
 
@@ -739,8 +814,8 @@ export const BabylonScene: React.FC = () => {
 
             // ── Tick cobots ──────────────────────────────────────────────
             for (const [id, cState] of cobotStates) {
-                const collided = tickCobot(cState, delta, isRunning);
-                const runtime = cobotRuntimeState(cState, isRunning);
+                const collided = tickCobot(cState, delta, true);
+                const runtime = cobotRuntimeState(cState, true);
                 st.setMachineState(id, runtime);
                 applyCobotStatusVisual(cState, runtime);
                 if (collided) {
@@ -761,11 +836,18 @@ export const BabylonScene: React.FC = () => {
             const GRAVITY = 9.81;
 
             simState.items.forEach((simItem, index) => {
-                // Lazy-create pool mesh
-                if (!partMeshes[index]) {
-                    const disc = createPlateMesh(scene, '#94a3b8', false, `part_${index}`);
-                    shadows.addShadowCaster(disc);
-                    partMeshes[index] = disc;
+                const meshKey = partMeshKeyFor(simItem);
+                if (!partMeshes[index] || partMeshKinds[index] !== meshKey) {
+                    partMeshes[index]?.dispose();
+                    const partMesh = createPartMesh(scene, {
+                        shape: simItem.shape || 'disc',
+                        color: simItem.color || '#94a3b8',
+                        hasCenterHole: simItem.hasCenterHole,
+                        hasIndexHole: simItem.hasIndexHole,
+                    }, false, `part_${index}`);
+                    shadows.addShadowCaster(partMesh);
+                    partMeshes[index] = partMesh;
+                    partMeshKinds[index] = meshKey;
                 }
 
                 const mesh = partMeshes[index];
@@ -797,7 +879,7 @@ export const BabylonScene: React.FC = () => {
                         Math.abs(item.position[0] - gx) < 0.1 && Math.abs(item.position[2] - gz) < 0.1
                     );
 
-                    // Landing surface height — cobot platform is at 1.16m
+                    // Landing surface height (includes cobot top platform level)
                     let surfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems);
 
                     // ── Stacking: settle on top of highest part below ─────
@@ -873,7 +955,7 @@ export const BabylonScene: React.FC = () => {
             simState.items = simState.items.filter(i => i.state !== 'dead');
 
             // ── Part collision repulsion (belt/floor level only) ────
-            const PART_D = 0.64;
+            const partSpacing = (a: PartSize, b: PartSize) => partRadius(a) + partRadius(b);
             const items = simState.items;
             
             const isRepellable = (item: typeof items[0]) => {
@@ -892,8 +974,9 @@ export const BabylonScene: React.FC = () => {
                     const dx = items[j].pos.x - items[i].pos.x;
                     const dz = items[j].pos.z - items[i].pos.z;
                     const d = Math.sqrt(dx * dx + dz * dz);
-                    if (d < PART_D && d > 0.001) {
-                        const push = (PART_D - d) * 0.5;
+                    const minDist = partSpacing(items[i].size, items[j].size);
+                    if (d < minDist && d > 0.001) {
+                        const push = (minDist - d) * 0.5;
                         const nx = dx / d, nz = dz / d;
                         items[i].pos.x -= nx * push;
                         items[i].pos.z -= nz * push;
@@ -917,26 +1000,35 @@ export const BabylonScene: React.FC = () => {
                 st.placedItems.forEach(item => {
                     if (item.type !== 'pile') return;
                     const count = item.config?.pileCount ?? 0;
-                    const cols = 3;
+                    const cols = Math.max(1, Math.min(6, Math.round(item.config?.tableGrid?.[0] || 3)));
+                    const rows = Math.max(1, Math.min(6, Math.round(item.config?.tableGrid?.[1] || 3)));
+                    const slotsPerLayer = cols * rows;
                     const [w, d] = item.config?.machineSize || [2, 2];
-                    const spacing = Math.min(0.52, Math.max(0.22, Math.min(w, d) / Math.max(2, cols)));
-                    const startX = item.position[0] - spacing;
-                    const startZ = item.position[2] - spacing;
+                    const spacingX = Math.min(0.52, Math.max(0.22, w / Math.max(2, cols)));
+                    const spacingZ = Math.min(0.52, Math.max(0.22, d / Math.max(2, rows)));
+                    const startX = item.position[0] - ((cols - 1) * spacingX) / 2;
+                    const startZ = item.position[2] - ((rows - 1) * spacingZ) / 2;
                     const baseY = (item.config?.machineHeight || 0.7) + DISC_HALF_H + 0.02;
                     for (let i = 0; i < count; i++) {
-                        const col = i % cols;
-                        const row = Math.floor(i / cols);
+                        const layer = Math.floor(i / slotsPerLayer);
+                        const slotIndex = i % slotsPerLayer;
+                        const col = slotIndex % cols;
+                        const row = Math.floor(slotIndex / cols);
                         simState.items.push({
                             id: Math.random().toString(36).slice(2),
+                            templateId: FALLBACK_PART_TEMPLATE.id,
+                            shape: 'disc',
                             pos: new Vector3(
-                                startX + col * spacing,
-                                baseY + Math.floor(row / cols) * 0.22,
-                                startZ + (row % cols) * spacing
+                                startX + col * spacingX,
+                                baseY + layer * 0.22,
+                                startZ + row * spacingZ
                             ),
                             rotY: Math.random() * Math.PI * 2,
                             state: 'free',
                             color: ITEM_COLORS[i % ITEM_COLORS.length],
                             size: ITEM_SIZES[i % ITEM_SIZES.length],
+                            hasCenterHole: true,
+                            hasIndexHole: true,
                         });
                     }
                 });

@@ -1,5 +1,6 @@
 export type ItemType = 'cobot' | 'belt' | 'sender' | 'receiver' | 'table' | 'camera' | 'pile' | 'indexed_receiver';
 export type PartSize = 'small' | 'medium' | 'large';
+export type PartShape = 'disc' | 'can' | 'box' | 'pyramid';
 export type ProgramAction = 'move' | 'pick' | 'drop' | 'wait';
 
 // 0: North (-Z), 1: East (+X), 2: South (+Z), 3: West (-X)
@@ -13,11 +14,22 @@ export interface ProgramStep {
     sortSize?: boolean;
 }
 
+export interface PartTemplate {
+    id: string;
+    name: string;
+    shape: PartShape;
+    color: string;
+    size: PartSize;
+    hasCenterHole?: boolean; // For disc templates
+    hasIndexHole?: boolean; // For disc templates
+}
+
 export interface ItemConfig {
     speed?: number; 
     program?: ProgramStep[]; // For Cobot programmability
     spawnColor?: string; // For Senders
     spawnSize?: PartSize | 'any'; // For Senders
+    spawnTemplateId?: string | 'any'; // For Senders
     acceptColor?: string; // For Receivers, Tables, Piles
     acceptSize?: PartSize | 'any'; // For Receivers, Tables, Piles
     autoOrganize?: boolean; // For Cobots: auto-sort items when idle
@@ -26,8 +38,11 @@ export interface ItemConfig {
     pickColors?: string[]; // For Cobots: empty means any color
     pickSizes?: PartSize[]; // For Cobots: empty means any size
     linkedCameraIds?: string[]; // For Cobots: cameras allowed to provide detections
+    defaultDropSortColor?: boolean; // For Cobots: default sort-by-color for new drop steps
+    defaultDropSortSize?: boolean; // For Cobots: default sort-by-size for new drop steps
     stackMax?: number; // For Cobots: max items per stack
     stackMatrix?: [number, number]; // For Cobots: [cols, rows] grid size
+    mountSlot?: [number, number]; // For Cobots: arm mount slot [col, row] within stack grid
     showTeachZones?: boolean; // For Cobots: show pick/drop teaching zones while selected
     showTeachPoints?: boolean; // For Cobots: show taught pick/drop point balls while selected
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
@@ -65,7 +80,9 @@ export interface FactoryState {
     credits: number;
     score: number;
     isRunning: boolean;
+    isPaused: boolean;
     simSpeedMult: number;
+    partTemplates: PartTemplate[];
     placedItems: PlacedItem[];
     buildMode: ItemType | null;
     buildRotation: Direction;
@@ -77,7 +94,12 @@ export interface FactoryState {
     setCredits: (credits: number) => void;
     setScore: (score: number | ((prev: number) => number)) => void;
     setIsRunning: (isRunning: boolean) => void;
+    setIsPaused: (isPaused: boolean) => void;
     setSimSpeedMult: (mult: number) => void;
+    addPartTemplate: (template: Omit<PartTemplate, 'id'>) => string;
+    updatePartTemplate: (id: string, updates: Partial<Omit<PartTemplate, 'id'>>) => void;
+    removePartTemplate: (id: string) => void;
+    clonePartTemplate: (id: string) => string | null;
     setBuildMode: (mode: ItemType | null) => void;
     setBuildRotation: (rot: Direction) => void;
     setBuildConfig: (config: Partial<ItemConfig>) => void;

@@ -211,12 +211,17 @@ export function createPile(item: PlacedItem, scene: Scene, isGhost = false): Tra
     const h = moduleHeight(item, 0.7);
     const wallT = Math.min(0.1, Math.max(0.045, Math.min(w, d) * 0.08));
 
+    const showWalls = item.config?.showWalls !== false;
+
     box('base', w, h, d, new Vector3(0, h / 2, 0), pbr(scene, '#292524', 0, 0.9, isGhost ? 0.4 : 1), scene, root);
-    box('floor', Math.max(0.2, w - wallT * 4), 0.02, Math.max(0.2, d - wallT * 4), new Vector3(0, h + 0.01, 0), floorMat, scene, root);
-    box('wallN', w, 0.6, wallT, new Vector3(0, h + 0.3, d / 2 - wallT / 2), wallMat, scene, root);
-    box('wallS', w, 0.6, wallT, new Vector3(0, h + 0.3, -d / 2 + wallT / 2), wallMat, scene, root);
-    box('wallE', wallT, 0.6, Math.max(0.2, d - wallT * 2), new Vector3(w / 2 - wallT / 2, h + 0.3, 0), wallMat, scene, root);
-    box('wallW', wallT, 0.6, Math.max(0.2, d - wallT * 2), new Vector3(-w / 2 + wallT / 2, h + 0.3, 0), wallMat, scene, root);
+    box('floor', showWalls ? Math.max(0.2, w - wallT * 4) : w, 0.02, showWalls ? Math.max(0.2, d - wallT * 4) : d, new Vector3(0, h + 0.01, 0), floorMat, scene, root);
+    
+    if (showWalls) {
+        box('wallN', w, 0.6, wallT, new Vector3(0, h + 0.3, d / 2 - wallT / 2), wallMat, scene, root);
+        box('wallS', w, 0.6, wallT, new Vector3(0, h + 0.3, -d / 2 + wallT / 2), wallMat, scene, root);
+        box('wallE', wallT, 0.6, Math.max(0.2, d - wallT * 2), new Vector3(w / 2 - wallT / 2, h + 0.3, 0), wallMat, scene, root);
+        box('wallW', wallT, 0.6, Math.max(0.2, d - wallT * 2), new Vector3(-w / 2 + wallT / 2, h + 0.3, 0), wallMat, scene, root);
+    }
 
     return root;
 }

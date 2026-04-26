@@ -12,6 +12,33 @@ const PICK_COLORS = [
 ];
 const PICK_SIZES: PartSize[] = ['small', 'medium', 'large'];
 const PROGRAM_ACTIONS: ProgramAction[] = ['move', 'pick', 'drop', 'wait'];
+const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { label: string, value: number, min: number, max: number, step: number, onChange: (val: number) => void, isWidth?: boolean }) => {
+    const handleWheel = (e: React.WheelEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -step : step;
+        let nextVal = value + delta;
+        nextVal = Math.max(min, Math.min(max, nextVal));
+        onChange(nextVal);
+    };
+
+    return (
+        <label className={`flex flex-col gap-1 ${isWidth ? 'col-span-full' : ''}`}>
+            <div className="flex justify-between items-center text-[10px] font-bold text-gray-500">
+                <span>{label}</span>
+                <span className="text-[#38bdf8] font-mono">{Number(value).toFixed(2)}</span>
+            </div>
+            <input 
+                type="range" 
+                min={min} max={max} step={step} 
+                value={value} 
+                onChange={(e) => onChange(parseFloat(e.target.value) || 0)} 
+                onWheel={handleWheel}
+                className="w-full cursor-ew-resize"
+            />
+        </label>
+    );
+};
 
 export const UI: React.FC = () => {
     const [showVisionConfig, setShowVisionConfig] = useState(false);
@@ -203,58 +230,39 @@ export const UI: React.FC = () => {
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, machineHeight: Math.max(0.1, snapValue(value || 0.1, heightStep)) } });
     };
 
+
     const renderModuleLayoutControls = () => {
         if (!selectedItem || !moduleConfigTypes.includes(selectedItem.type)) return null;
         return (
             <div className="flex flex-col gap-3 w-full">
-                <div className="grid grid-cols-3 gap-2">
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">POS X</span>
-                        <input type="number" step={snapStep} value={selectedItem.position[0]} onChange={(e) => patchSelectedPosition(0, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">POS Y</span>
-                        <input type="number" step={heightStep} value={selectedItem.position[1]} onChange={(e) => patchSelectedPosition(1, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">POS Z</span>
-                        <input type="number" step={snapStep} value={selectedItem.position[2]} onChange={(e) => patchSelectedPosition(2, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
+                <div className="grid grid-cols-3 gap-3">
+                    <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
+                    <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
+                    <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
                 </div>
-                <div className="grid grid-cols-3 gap-2">
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">WIDTH</span>
-                        <input type="number" min="0.5" max="4" step={snapStep} value={selectedItem.config?.machineSize?.[0] || 2} onChange={(e) => patchMachineSize(0, parseFloat(e.target.value))} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">DEPTH</span>
-                        <input type="number" min="0.5" max="4" step={snapStep} value={selectedItem.config?.machineSize?.[1] || 2} onChange={(e) => patchMachineSize(1, parseFloat(e.target.value))} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
-                    <label className="flex flex-col gap-1">
-                        <span className="text-[10px] font-bold text-gray-500">HEIGHT</span>
-                        <input type="number" min="0.1" max="1.5" step={heightStep} value={selectedItem.config?.machineHeight || (selectedItem.type === 'pile' ? 0.7 : 0.538)} onChange={(e) => patchMachineHeight(parseFloat(e.target.value))} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                    </label>
+                <div className="grid grid-cols-3 gap-3">
+                    <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.machineSize?.[0] || 2} onChange={(v) => patchMachineSize(0, v)} />
+                    <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.machineSize?.[1] || 2} onChange={(v) => patchMachineSize(1, v)} />
+                    <RangeSlider label="HEIGHT" min={0.1} max={1.5} step={heightStep} value={selectedItem.config?.machineHeight || (selectedItem.type === 'pile' ? 0.7 : 0.538)} onChange={(v) => patchMachineHeight(v)} />
                 </div>
                 {selectedItem.type === 'pile' && (
-                    <div className="grid grid-cols-2 gap-2 mt-1">
-                        <label className="flex flex-col gap-1">
-                            <span className="text-[10px] font-bold text-gray-500">GRID W</span>
-                            <input
-                                type="number" min="1" max="6"
-                                value={selectedItem.config?.tableGrid?.[0] || 2}
-                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [parseInt(e.target.value) || 1, selectedItem.config?.tableGrid?.[1] || 2] } })}
-                                className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                            />
-                        </label>
-                        <label className="flex flex-col gap-1">
-                            <span className="text-[10px] font-bold text-gray-500">GRID D</span>
-                            <input
-                                type="number" min="1" max="6"
-                                value={selectedItem.config?.tableGrid?.[1] || 2}
-                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, parseInt(e.target.value) || 1] } })}
-                                className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                            />
-                        </label>
+                    <div className="flex flex-col gap-3 mt-1">
+                        <div className="grid grid-cols-2 gap-3">
+                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 2] } })} />
+                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, v] } })} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 items-end">
+                            <RangeSlider label="STARTING ITEMS" min={0} max={24} step={1} value={selectedItem.config?.pileCount ?? 0} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, pileCount: v } })} />
+                            <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-[34px]">
+                                <span className="text-[10px] font-bold text-gray-500">SHOW WALLS</span>
+                                <input
+                                    type="checkbox"
+                                    checked={selectedItem.config?.showWalls !== false}
+                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showWalls: e.target.checked } })}
+                                    className="accent-[#38bdf8]"
+                                />
+                            </label>
+                        </div>
                     </div>
                 )}
             </div>
@@ -497,42 +505,16 @@ export const UI: React.FC = () => {
                                 )}
                                 {selectedItem.type === 'belt' && !teachMinimized && (
                                     <div className="flex flex-col gap-3 w-full">
-                                        <div className="flex justify-between">
-                                            <span className="text-xs font-bold text-gray-500">BELT SPEED</span>
-                                            <span className="text-xs font-bold text-blue-400">{selectedItem.config?.speed || 2}x</span>
+                                        <RangeSlider label="BELT SPEED" min={0.5} max={5} step={0.5} value={selectedItem.config?.speed || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+                                        <div className="grid grid-cols-3 gap-3">
+                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
+                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
+                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
                                         </div>
-                                        <input 
-                                            type="range" min="0.5" max="5" step="0.5" 
-                                            value={selectedItem.config?.speed || 2} 
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: parseFloat(e.target.value) } })} 
-                                        />
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">WIDTH</span>
-                                                <input type="number" min="0.5" max="4" step={snapStep} value={selectedItem.config?.beltSize?.[0] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [Math.max(0.5, snapValue(parseFloat(e.target.value) || 0.5)), selectedItem.config?.beltSize?.[1] || 2] } })} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">DEPTH</span>
-                                                <input type="number" min="0.5" max="4" step={snapStep} value={selectedItem.config?.beltSize?.[1] || 2} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [selectedItem.config?.beltSize?.[0] || 2, Math.max(0.5, snapValue(parseFloat(e.target.value) || 0.5))] } })} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">HEIGHT</span>
-                                                <input type="number" min="0.25" max="1.5" step={heightStep} value={selectedItem.config?.beltHeight || 0.538} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltHeight: snapValue(parseFloat(e.target.value) || 0.538, heightStep) } })} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                        </div>
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS X</span>
-                                                <input type="number" step={snapStep} value={selectedItem.position[0]} onChange={(e) => patchSelectedPosition(0, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS Y</span>
-                                                <input type="number" step={heightStep} value={selectedItem.position[1]} onChange={(e) => patchSelectedPosition(1, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS Z</span>
-                                                <input type="number" step={snapStep} value={selectedItem.position[2]} onChange={(e) => patchSelectedPosition(2, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
+                                        <div className="grid grid-cols-3 gap-3">
+                                            <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.beltSize?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [Math.max(0.5, snapValue(v, snapStep)), selectedItem.config?.beltSize?.[1] || 2] } })} />
+                                            <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={selectedItem.config?.beltSize?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltSize: [selectedItem.config?.beltSize?.[0] || 2, Math.max(0.5, snapValue(v, snapStep))] } })} />
+                                            <RangeSlider label="HEIGHT" min={0.25} max={1.5} step={heightStep} value={selectedItem.config?.beltHeight || 0.538} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltHeight: snapValue(v, heightStep) } })} />
                                         </div>
                                         <div className="grid grid-cols-2 gap-2">
                                             <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
@@ -556,82 +538,20 @@ export const UI: React.FC = () => {
                                 )}
                                 {selectedItem.type === 'table' && !teachMinimized && (
                                     <div className="flex flex-col gap-3 w-full">
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS X</span>
-                                                <input type="number" step={snapStep} value={selectedItem.position[0]} onChange={(e) => patchSelectedPosition(0, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS Y</span>
-                                                <input type="number" step={heightStep} value={selectedItem.position[1]} onChange={(e) => patchSelectedPosition(1, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">POS Z</span>
-                                                <input type="number" step={snapStep} value={selectedItem.position[2]} onChange={(e) => patchSelectedPosition(2, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none" />
-                                            </label>
+                                        <div className="grid grid-cols-3 gap-3">
+                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
+                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
+                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
                                         </div>
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">WIDTH</span>
-                                                <input
-                                                    type="number"
-                                                    min="0.5"
-                                                    max="3.5"
-                                                    step={snapStep}
-                                                    value={selectedItem.config?.tableSize?.[0] || 1.8}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [Math.max(0.5, snapValue(parseFloat(e.target.value) || 0.5)), selectedItem.config?.tableSize?.[1] || 1.8] } })}
-                                                    className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                                                />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">DEPTH</span>
-                                                <input
-                                                    type="number"
-                                                    min="0.5"
-                                                    max="3.5"
-                                                    step={snapStep}
-                                                    value={selectedItem.config?.tableSize?.[1] || 1.8}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [selectedItem.config?.tableSize?.[0] || 1.8, Math.max(0.5, snapValue(parseFloat(e.target.value) || 0.5))] } })}
-                                                    className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                                                />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">HEIGHT</span>
-                                                <input
-                                                    type="number"
-                                                    min="0.25"
-                                                    max="1.2"
-                                                    step={heightStep}
-                                                    value={selectedItem.config?.tableHeight || 0.45}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableHeight: snapValue(parseFloat(e.target.value) || 0.45, heightStep) } })}
-                                                    className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                                                />
-                                            </label>
+                                        <div className="grid grid-cols-3 gap-3 mt-2">
+                                            <RangeSlider label="WIDTH" min={0.5} max={3.5} step={snapStep} value={selectedItem.config?.tableSize?.[0] || 1.8} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [Math.max(0.5, snapValue(v, snapStep)), selectedItem.config?.tableSize?.[1] || 1.8] } })} />
+                                            <RangeSlider label="DEPTH" min={0.5} max={3.5} step={snapStep} value={selectedItem.config?.tableSize?.[1] || 1.8} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableSize: [selectedItem.config?.tableSize?.[0] || 1.8, Math.max(0.5, snapValue(v, snapStep))] } })} />
+                                            <RangeSlider label="HEIGHT" min={0.25} max={1.2} step={heightStep} value={selectedItem.config?.tableHeight || 0.45} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableHeight: snapValue(v, heightStep) } })} />
                                         </div>
-                                        <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">GRID W</span>
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    max="6"
-                                                    value={selectedItem.config?.tableGrid?.[0] || 2}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [parseInt(e.target.value) || 1, selectedItem.config?.tableGrid?.[1] || 2] } })}
-                                                    className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                                                />
-                                            </label>
-                                            <label className="flex flex-col gap-1">
-                                                <span className="text-[10px] font-bold text-gray-500">GRID D</span>
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    max="6"
-                                                    value={selectedItem.config?.tableGrid?.[1] || 2}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, parseInt(e.target.value) || 1] } })}
-                                                    className="bg-gray-800 text-white text-xs rounded px-2 py-1 border border-gray-600 outline-none"
-                                                />
-                                            </label>
-                                            <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
+                                        <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end mt-2">
+                                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 2] } })} />
+                                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 2, v] } })} />
+                                            <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-7">
                                                 <span className="text-[10px] font-bold text-gray-500">SHOW</span>
                                                 <input
                                                     type="checkbox"
@@ -644,38 +564,13 @@ export const UI: React.FC = () => {
                                 )}
                                                 {selectedItem.type === 'cobot' && !teachMinimized && (
                                                     <>
-                                                        <div className="grid grid-cols-4 gap-1 items-end">
-                                                            <label className="flex flex-col gap-0.5">
-                                                                <span className="text-[9px] font-bold text-gray-500">POS X</span>
-                                                                <input type="number" step={snapStep} value={selectedItem.position[0]} onChange={(e) => patchSelectedPosition(0, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none" />
-                                                            </label>
-                                                            <label className="flex flex-col gap-0.5">
-                                                                <span className="text-[9px] font-bold text-gray-500">POS Y</span>
-                                                                <input type="number" step={heightStep} value={selectedItem.position[1]} onChange={(e) => patchSelectedPosition(1, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none" />
-                                                            </label>
-                                                            <label className="flex flex-col gap-0.5">
-                                                                <span className="text-[9px] font-bold text-gray-500">POS Z</span>
-                                                                <input type="number" step={snapStep} value={selectedItem.position[2]} onChange={(e) => patchSelectedPosition(2, parseFloat(e.target.value) || 0)} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none" />
-                                                            </label>
-                                                            <button
-                                                                onClick={unlockSelectedCobot}
-                                                                disabled={!selectedItem.config?.collisionStopped}
-                                                                className={`rounded px-2 py-0.5 text-[9px] font-bold border ${selectedItem.config?.collisionStopped ? 'bg-amber-500/20 text-amber-200 border-amber-500/50 hover:bg-amber-500/30' : 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'}`}
-                                                            >
-                                                                UNLOCK
-                                                            </button>
+                                                        <div className="grid grid-cols-3 gap-3">
+                                                            <RangeSlider label="POS X" min={-10} max={10} step={snapStep} value={selectedItem.position[0]} onChange={(v) => patchSelectedPosition(0, v)} />
+                                                            <RangeSlider label="POS Y" min={0} max={5} step={heightStep} value={selectedItem.position[1]} onChange={(v) => patchSelectedPosition(1, v)} />
+                                                            <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={selectedItem.position[2]} onChange={(v) => patchSelectedPosition(2, v)} />
                                                         </div>
-                                                        <div className="flex flex-col gap-1 w-full">
-                                                            <div className="flex justify-between">
-                                                                <span className="text-[9px] font-bold text-gray-500">ARM SPEED</span>
-                                                                <span className="text-[9px] font-bold text-blue-400">{selectedItem.config?.speed || 1}x</span>
-                                                            </div>
-                                                            <input 
-                                                                type="range" min="0.5" max="3" step="0.1" 
-                                                                value={selectedItem.config?.speed || 1} 
-                                                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: parseFloat(e.target.value) } })} 
-                                                            />
-                                                        </div>
+                                                        <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+
                                                         <div className="flex gap-2 w-full">
                                                             <div className="flex flex-col gap-0.5 w-1/2">
                                                                 <span className="text-[9px] font-bold text-gray-500">STACK GRID (WxD)</span>
@@ -818,6 +713,19 @@ export const UI: React.FC = () => {
                                                         <button onClick={handleClearProgram} className="text-[10px] text-red-400 hover:text-red-300">Clear</button>
                                                     </div>
 
+                                                    <div className="grid grid-cols-2 gap-1 mb-1">
+                                                        <label className="col-span-2 flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-2 py-1">
+                                                            <div className="flex flex-col">
+                                                                <span className="text-[9px] font-bold text-gray-500">IDLE AUTO-ORGANIZE</span>
+                                                                <span className="text-[8px] text-gray-600">Sort nearby items into matching slots when idle</span>
+                                                            </div>
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedItem.config?.autoOrganize === true}
+                                                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, autoOrganize: e.target.checked } })}
+                                                            />
+                                                        </label>
+                                                    </div>
                                                     <div className="grid grid-cols-2 gap-1">
                                                         <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-2 py-1">
                                                             <span className="text-[9px] font-bold text-gray-500">POINT BALLS</span>
@@ -856,38 +764,42 @@ export const UI: React.FC = () => {
                                                                     <button onClick={() => removeProgramStep(idx)} className="ml-auto p-0.5 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"><Trash2 size={12} /></button>
                                                                 </div>
                                                                 {step.action === 'wait' ? (
-                                                                    <div className="flex items-center gap-1.5 px-5">
-                                                                        <span className="text-[9px] font-bold text-gray-500">TIME</span>
-                                                                        <input
-                                                                            type="number"
-                                                                            min="0.1"
-                                                                            max="5"
-                                                                            step="0.1"
-                                                                            value={step.duration ?? 0.4}
-                                                                            onChange={(e) => patchProgramStep(idx, { duration: parseFloat(e.target.value) || 0.4 })}
-                                                                            className="w-16 bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none"
-                                                                        />
-                                                                        <span className="text-[9px] text-gray-500">sec</span>
+                                                                    <div className="px-1 mt-1">
+                                                                        <RangeSlider label="WAIT TIME (s)" min={0.1} max={5} step={0.1} value={step.duration ?? 0.4} onChange={(v) => patchProgramStep(idx, { duration: v })} />
                                                                     </div>
                                                                 ) : (
-                                                                    <div className="grid grid-cols-3 gap-1 px-1">
-                                                                        {(['X', 'Y', 'Z'] as const).map((axis, axisIdx) => (
-                                                                            <label key={axis} className="flex flex-col gap-0.5">
-                                                                                <span className="text-[9px] font-bold text-gray-500">{axis}</span>
-                                                                                <input
-                                                                                    type="number"
-                                                                                    step="0.1"
+                                                                    <div className="flex flex-col gap-2">
+                                                                        <div className="grid grid-cols-3 gap-2 px-1 mt-1">
+                                                                            {(['X', 'Y', 'Z'] as const).map((axis, axisIdx) => (
+                                                                                <RangeSlider
+                                                                                    key={axis}
+                                                                                    label={axis}
+                                                                                    min={axis === 'Y' ? 0.05 : selectedItem.position[axisIdx === 0 ? 0 : 2] - 2.8}
+                                                                                    max={axis === 'Y' ? 3.5 : selectedItem.position[axisIdx === 0 ? 0 : 2] + 2.8}
+                                                                                    step={0.1}
                                                                                     value={step.pos?.[axisIdx] ?? (axis === 'Y' ? 0.56 : selectedItem.position[axisIdx === 0 ? 0 : 2])}
-                                                                                    onChange={(e) => {
+                                                                                    onChange={(v) => {
                                                                                         const currentPos = step.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]];
                                                                                         const nextPos = [...currentPos] as [number, number, number];
-                                                                                        nextPos[axisIdx] = parseFloat(e.target.value) || 0;
+                                                                                        nextPos[axisIdx] = v;
                                                                                         patchProgramStep(idx, { pos: nextPos });
                                                                                     }}
-                                                                                    className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none"
                                                                                 />
-                                                                            </label>
-                                                                        ))}
+                                                                            ))}
+                                                                        </div>
+                                                                        {step.action === 'drop' && (
+                                                                            <div className="flex items-center gap-4 px-1 pb-1">
+                                                                                <span className="text-[9px] font-bold text-gray-500">ORGANIZE BY:</span>
+                                                                                <label className="flex items-center gap-1 cursor-pointer">
+                                                                                    <input type="checkbox" className="w-3 h-3 accent-[#38bdf8]" checked={step.sortColor !== false} onChange={(e) => patchProgramStep(idx, { sortColor: e.target.checked })} />
+                                                                                    <span className="text-[9px] font-bold text-gray-400">COLOR</span>
+                                                                                </label>
+                                                                                <label className="flex items-center gap-1 cursor-pointer">
+                                                                                    <input type="checkbox" className="w-3 h-3 accent-[#38bdf8]" checked={step.sortSize !== false} onChange={(e) => patchProgramStep(idx, { sortSize: e.target.checked })} />
+                                                                                    <span className="text-[9px] font-bold text-gray-400">SIZE</span>
+                                                                                </label>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
                                                                 )}
                                                             </div>
@@ -957,22 +869,38 @@ export const UI: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
-                                {selectedItem.type === 'receiver' && (
-                                    <div className="flex flex-col gap-2 w-full">
-                                        <div className="flex justify-between">
-                                            <span className="text-xs font-bold text-gray-500">ACCEPTED COLOR</span>
+                                {['receiver', 'table', 'pile', 'indexed_receiver'].includes(selectedItem.type) && (
+                                    <div className="flex flex-col gap-2 w-full mt-2 border-t border-gray-700 pt-2">
+                                        <span className="text-[10px] text-gray-400 font-bold">ACCEPTANCE FILTERS</span>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <label className="flex flex-col gap-1">
+                                                <span className="text-[9px] font-bold text-gray-500">ACCEPTED COLOR</span>
+                                                <select 
+                                                    className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
+                                                    value={selectedItem.config?.acceptColor || 'any'}
+                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, acceptColor: e.target.value } })}
+                                                >
+                                                    <option value="any">Any Color (All)</option>
+                                                    <option value="#ef4444">Red</option>
+                                                    <option value="#3b82f6">Blue</option>
+                                                    <option value="#10b981">Green</option>
+                                                    <option value="#f59e0b">Yellow</option>
+                                                </select>
+                                            </label>
+                                            <label className="flex flex-col gap-1">
+                                                <span className="text-[9px] font-bold text-gray-500">ACCEPTED SIZE</span>
+                                                <select 
+                                                    className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
+                                                    value={selectedItem.config?.acceptSize || 'any'}
+                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, acceptSize: e.target.value as any } })}
+                                                >
+                                                    <option value="any">Any Size (All)</option>
+                                                    <option value="small">Small</option>
+                                                    <option value="medium">Medium</option>
+                                                    <option value="large">Large</option>
+                                                </select>
+                                            </label>
                                         </div>
-                                        <select 
-                                            className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
-                                            value={selectedItem.config?.acceptColor || 'any'}
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, acceptColor: e.target.value } })}
-                                        >
-                                            <option value="any">Any Color (All)</option>
-                                            <option value="#ef4444">Red Only</option>
-                                            <option value="#3b82f6">Blue Only</option>
-                                            <option value="#10b981">Green Only</option>
-                                            <option value="#f59e0b">Yellow Only</option>
-                                        </select>
                                     </div>
                                 )}
                             </div>

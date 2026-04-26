@@ -9,6 +9,8 @@ export interface ProgramStep {
     action: ProgramAction;
     pos?: [number, number, number];
     duration?: number;
+    sortColor?: boolean;
+    sortSize?: boolean;
 }
 
 export interface ItemConfig {
@@ -16,8 +18,11 @@ export interface ItemConfig {
     program?: ProgramStep[]; // For Cobot programmability
     spawnColor?: string; // For Senders
     spawnSize?: PartSize | 'any'; // For Senders
-    acceptColor?: string; // For Receivers
+    acceptColor?: string; // For Receivers, Tables, Piles
+    acceptSize?: PartSize | 'any'; // For Receivers, Tables, Piles
+    autoOrganize?: boolean; // For Cobots: auto-sort items when idle
     pileCount?: number; // For Piles (number of pre-loaded parts)
+    showWalls?: boolean; // For Piles (whether to render the outer walls)
     pickColors?: string[]; // For Cobots: empty means any color
     pickSizes?: PartSize[]; // For Cobots: empty means any size
     linkedCameraIds?: string[]; // For Cobots: cameras allowed to provide detections

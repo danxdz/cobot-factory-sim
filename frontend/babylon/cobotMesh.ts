@@ -193,14 +193,14 @@ function nearbyPickupPenalty(candidate: SimItem): number {
     return crowding;
 }
 
-function getPileDropTarget(state: CobotState, pile: PlacedItem): Vector3 {
-    const gridW = pile.config?.tableGrid?.[0] || 2;
-    const gridD = pile.config?.tableGrid?.[1] || 2;
-    const sizeW = pile.config?.machineSize?.[0] || 2;
-    const sizeD = pile.config?.machineSize?.[1] || 2;
+function getOrganizedDropTarget(state: CobotState, container: PlacedItem, sortColor: boolean, sortSize: boolean): Vector3 {
+    const gridW = container.config?.tableGrid?.[0] || 2;
+    const gridD = container.config?.tableGrid?.[1] || 2;
+    const sizeW = container.config?.machineSize?.[0] || container.config?.tableSize?.[0] || 2;
+    const sizeD = container.config?.machineSize?.[1] || container.config?.tableSize?.[1] || 2;
 
     const rotAngles: Record<string, number> = { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 };
-    const rotY = rotAngles[pile.rotation] ?? 0;
+    const rotY = rotAngles[container.rotation] ?? 0;
     
     const slots: Vector3[] = [];
     const cellW = sizeW / gridW;
@@ -211,32 +211,31 @@ function getPileDropTarget(state: CobotState, pile: PlacedItem): Vector3 {
             const lx = -sizeW / 2 + cellW / 2 + x * cellW;
             const lz = -sizeD / 2 + cellD / 2 + z * cellD;
             
-            const wx = pile.position[0] + lx * Math.cos(rotY) + lz * Math.sin(rotY);
-            const wz = pile.position[2] - lx * Math.sin(rotY) + lz * Math.cos(rotY);
+            const wx = container.position[0] + lx * Math.cos(rotY) + lz * Math.sin(rotY);
+            const wz = container.position[2] - lx * Math.sin(rotY) + lz * Math.cos(rotY);
             
-            slots.push(new Vector3(wx, pile.position[1], wz));
+            slots.push(new Vector3(wx, container.position[1], wz));
         }
     }
     
     const STACK_R = Math.min(cellW, cellD) * 0.45;
-    const slotCounts = slots.map(sl =>
-        simState.items.filter(i =>
+    const slotContents = slots.map(sl =>
+        simState.items.find(i =>
             i.state !== 'grabbed' &&
             Math.sqrt((i.pos.x - sl.x) ** 2 + (i.pos.z - sl.z) ** 2) < STACK_R
-        ).length
+        )
     );
     
-    const slotColors = slots.map(sl => {
-        const item = simState.items.find(i =>
-            i.state !== 'grabbed' &&
-            Math.sqrt((i.pos.x - sl.x) ** 2 + (i.pos.z - sl.z) ** 2) < STACK_R
-        );
-        return item ? item.color : null;
-    });
-
+    const slotCounts = slots.map((sl, i) => slotContents[i] ? 1 : 0);
     const itemColor = state.grabbedItem!.color;
+    const itemSize = state.grabbedItem!.size;
     
-    let bestIdx = slots.findIndex((_, i) => slotCounts[i] > 0 && slotColors[i] === itemColor);
+    let bestIdx = slots.findIndex((_, i) => 
+        slotCounts[i] > 0 && 
+        (!sortColor || slotContents[i]?.color === itemColor) &&
+        (!sortSize || slotContents[i]?.size === itemSize)
+    );
+
     if (bestIdx < 0) {
         bestIdx = slots.findIndex((_, i) => slotCounts[i] === 0);
     }
@@ -255,14 +254,17 @@ function currentDropTarget(state: CobotState): Vector3 | null {
     const step = state.program[state.stepIndex % state.program.length];
     if (step?.action !== 'drop' || !step.pos) return null;
     
-    const pile = state.obstacles.find(o => 
-        o.type === 'pile' && 
-        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || 2) / 2 && 
-        Math.abs(o.position[2] - step.pos![2]) < (o.config?.machineSize?.[1] || 2) / 2
+    const container = state.obstacles.find(o => 
+        ['pile', 'table', 'receiver', 'indexed_receiver'].includes(o.type) && 
+        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || o.config?.tableSize?.[0] || 2) / 2 && 
+        Math.abs(o.position[2] - step.pos![2]) < (o.config?.machineSize?.[1] || o.config?.tableSize?.[1] || 2) / 2
     );
 
-    if (pile) {
-        return getPileDropTarget(state, pile);
+    const sortColor = step.sortColor !== false;
+    const sortSize = step.sortSize !== false;
+
+    if (container && (sortColor || sortSize)) {
+        return getOrganizedDropTarget(state, container, sortColor, sortSize);
     }
 
     return new Vector3(step.pos[0], step.pos[1], step.pos[2]);
@@ -435,6 +437,8 @@ export interface CobotState {
     grabbedItem: SimItem | null;
     waitTimer: number;
     autoDropTarget: Vector3 | null;  // set during auto-stack
+    isAutoProgram?: boolean;
+    toolNormalBlend?: number;
 
     position: [number, number, number];
     baseRotY: number;
@@ -665,6 +669,46 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     return { node: root, state };
 }
 
+function findItemToOrganize(state: CobotState) {
+    const reachRadius = 2.4; // Cobot max reach
+    state.mountBase.computeWorldMatrix(true);
+    const mountPos = state.mountBase.getAbsolutePosition();
+    const allItems = simState.items.filter(i => i.state === 'free');
+    
+    // Find matching destinations first
+    const dests = factoryStore.getState().placedItems.filter(p => 
+        ['receiver', 'table', 'pile', 'indexed_receiver'].includes(p.type) && 
+        (p.config?.acceptColor !== 'any' || p.config?.acceptSize !== 'any') &&
+        Vector3.Distance(mountPos, new Vector3(p.position[0], mountPos.y, p.position[2])) < reachRadius + 0.5
+    );
+
+    if (dests.length === 0) return null;
+
+    for (const item of allItems) {
+        if (Vector3.Distance(mountPos, item.pos) > reachRadius) continue;
+        
+        // Find a valid destination for this item
+        for (const dest of dests) {
+            const matchesColor = !dest.config?.acceptColor || dest.config.acceptColor === 'any' || dest.config.acceptColor === item.color;
+            const matchesSize = !dest.config?.acceptSize || dest.config.acceptSize === 'any' || dest.config.acceptSize === item.size;
+            
+            if (matchesColor && matchesSize) {
+                // Ensure the item is NOT already on the destination!
+                const dx = item.pos.x - dest.position[0];
+                const dz = item.pos.z - dest.position[2];
+                const destW = dest.config?.machineSize?.[0] || dest.config?.tableSize?.[0] || 2;
+                const destD = dest.config?.machineSize?.[1] || dest.config?.tableSize?.[1] || 2;
+                if (Math.abs(dx) <= destW/2 + 0.1 && Math.abs(dz) <= destD/2 + 0.1) {
+                    continue; // Already neatly on this destination
+                }
+                
+                return { item, dest };
+            }
+        }
+    }
+    return null;
+}
+
 export function tickCobot(state: CobotState, delta: number, isRunning: boolean): boolean {
     const L1 = 1.35;
     const L2 = 1.0;
@@ -691,19 +735,19 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.recoveryTimer = 0;
         return false;
     } else if (state.safetyStopped) {
-        state.recoveryTimer += delta;
         state.ikVelocity.setAll(0);
         if (state.targetedItem?.state === 'targeted') state.targetedItem.state = 'free';
         state.targetedItem = null;
         state.desiredTarget.copyFrom(state.ikTarget);
-        if (state.recoveryTimer > 1.2) {
+        
+        // Recover perfectly when the user moves the obstacle out of the way
+        if (!armHitsObstacle(state, state.obstacles)) {
             state.safetyStopped = false;
-            state.recoveryTimer = 0;
             state.blockedTimer = 0;
             state.phase = 'idle';
             state.desiredTarget.copyFrom(state.idleTarget);
         }
-        return false;
+        return state.safetyStopped;
     } else if (state.program.length > 0) {
         const distToTarget = Vector3.Distance(state.ikTarget, state.desiredTarget);
         let reachRadius = 0.05;
@@ -1008,11 +1052,35 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 }
                 break;
             case 'next':
-                state.stepIndex++; state.phase = 'idle'; break;
+                state.stepIndex++;
+                if (state.isAutoProgram && state.stepIndex >= state.program.length) {
+                    state.program = [];
+                    state.isAutoProgram = false;
+                    state.stepIndex = 0;
+                    state.blockedTimer = 0;
+                }
+                state.phase = 'idle'; 
+                break;
         }
     } else {
-        // No program — auto-stack only (pick steps implied from nearby items)
-        state.desiredTarget.copyFrom(state.idleTarget);
+        // No program — check for idle auto-organize
+        if (state.config?.autoOrganize && state.phase === 'idle' && state.blockedTimer > 0.5) {
+            const org = findItemToOrganize(state);
+            if (org) {
+                state.program = [
+                    { action: 'pick', pos: [org.item.pos.x, org.item.pos.y, org.item.pos.z] },
+                    { action: 'drop', pos: [org.dest.position[0], org.dest.position[1], org.dest.position[2]] }
+                ];
+                state.isAutoProgram = true;
+                state.stepIndex = 0;
+            } else {
+                state.desiredTarget.copyFrom(state.idleTarget);
+                state.blockedTimer += delta;
+            }
+        } else {
+            state.desiredTarget.copyFrom(state.idleTarget);
+            if (state.phase === 'idle') state.blockedTimer += delta;
+        }
     }
 
     state.desiredTarget.y = Math.max(state.desiredTarget.y, state.position[1] + 0.1);
@@ -1086,8 +1154,14 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     const el = elbowAngle;
     const wr = Math.PI - sh - el;
     const toolNormalPhase = precisePhase || !!state.grabbedItem;
-    const wristPitch = toolNormalPhase ? wr : wr * 0.72;
-    const handPitchAngle = toolNormalPhase ? 0 : wr * 0.28;
+    const targetToolNormalBlend = toolNormalPhase ? 1.0 : 0.0;
+    
+    if (state.toolNormalBlend === undefined) state.toolNormalBlend = targetToolNormalBlend;
+    state.toolNormalBlend += (targetToolNormalBlend - state.toolNormalBlend) * Math.min(1, delta * 12 * state.speed);
+
+    const blend = state.toolNormalBlend;
+    const wristPitch = wr * (0.72 + 0.28 * blend);
+    const handPitchAngle = wr * (0.28 - 0.28 * blend);
 
     state.shoulder.rotation.x = sh;
     state.elbow.rotation.x    = el;

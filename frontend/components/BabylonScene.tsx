@@ -4,7 +4,7 @@ import {
     HemisphericLight, DirectionalLight, ShadowGenerator,
     MeshBuilder, PBRMaterial, TransformNode, Mesh,
     PointerEventTypes, PhysicsAggregate, PhysicsShapeType,
-    HavokPlugin, AbstractMesh
+    HavokPlugin, AbstractMesh, StandardMaterial
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import { factoryStore } from '../store';
@@ -294,6 +294,16 @@ export const BabylonScene: React.FC = () => {
         dropZoneMat.alpha = 0.86;
         dropZoneMat.transparencyMode = 2;
 
+        const pickCoreMat = new StandardMaterial('pickCoreMat', scene);
+        pickCoreMat.emissiveColor = Color3.FromHexString('#4ade80');
+        pickCoreMat.disableLighting = true;
+        pickCoreMat.disableDepthWrite = true;
+
+        const dropCoreMat = new StandardMaterial('dropCoreMat', scene);
+        dropCoreMat.emissiveColor = Color3.FromHexString('#f87171');
+        dropCoreMat.disableLighting = true;
+        dropCoreMat.disableDepthWrite = true;
+
         const armRangeMat = new PBRMaterial('armRangeMat', scene);
         armRangeMat.albedoColor = Color3.FromHexString('#f8fafc');
         armRangeMat.emissiveColor = Color3.FromHexString('#f8fafc').scale(0.22);
@@ -352,9 +362,10 @@ export const BabylonScene: React.FC = () => {
             if (showPoints) {
                 (selected.config?.program || []).forEach((step, idx) => {
                     if ((step.action !== 'pick' && step.action !== 'drop') || !step.pos) return;
-                    if (isOnOtherCobot(step.pos)) return;
                     const mat = step.action === 'pick' ? pickZoneMat : dropZoneMat;
+                    const cMat = step.action === 'pick' ? dropCoreMat : pickCoreMat;
                     const y = Math.max(0.06, step.pos[1] + 0.03);
+                    
                     const ball = MeshBuilder.CreateSphere(`teach_${step.action}_ball_${idx}`, {
                         diameter: 0.34,
                         segments: 24,
@@ -363,6 +374,16 @@ export const BabylonScene: React.FC = () => {
                     ball.material = mat;
                     ball.isPickable = false;
                     ball.parent = teachZoneRoot;
+
+                    const core = MeshBuilder.CreateSphere(`teach_${step.action}_core_${idx}`, {
+                        diameter: 0.14,
+                        segments: 16,
+                    }, scene);
+                    core.position.copyFrom(ball.position);
+                    core.material = cMat;
+                    core.isPickable = false;
+                    core.parent = teachZoneRoot;
+                    core.renderingGroupId = 2;
                 });
             }
         }
@@ -844,16 +865,23 @@ export const BabylonScene: React.FC = () => {
 
             simState.items = simState.items.filter(i => i.state !== 'dead');
 
-            // ── Part collision repulsion (2D circles, belt level only) ────
+            // ── Part collision repulsion (belt/floor level only) ────
             const PART_D = 0.64;
-            const BELT_MAX_Y = 0.65; // only repel items near belt/floor height
             const items = simState.items;
+            
+            const isRepellable = (item: typeof items[0]) => {
+                if (item.state !== 'free') return false;
+                if (item.pos.y > 0.65) return false;
+                const gx = Math.round(item.pos.x / 2) * 2;
+                const gz = Math.round(item.pos.z / 2) * 2;
+                const tile = placedItems.find(p => Math.abs(p.position[0] - gx) < 0.1 && Math.abs(p.position[2] - gz) < 0.1);
+                return !tile || tile.type === 'belt' || tile.type === 'sender';
+            };
+
             for (let i = 0; i < items.length; i++) {
-                if (items[i].state !== 'free') continue;
-                if (items[i].pos.y > BELT_MAX_Y) continue; // skip stacked items
+                if (!isRepellable(items[i])) continue;
                 for (let j = i + 1; j < items.length; j++) {
-                    if (items[j].state !== 'free') continue;
-                    if (items[j].pos.y > BELT_MAX_Y) continue; // skip stacked items
+                    if (!isRepellable(items[j])) continue;
                     const dx = items[j].pos.x - items[i].pos.x;
                     const dz = items[j].pos.z - items[i].pos.z;
                     const d = Math.sqrt(dx * dx + dz * dz);

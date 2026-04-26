@@ -81,13 +81,14 @@ class Store {
                         score: 0,
                         selectedItemId: null,
                         teachAction: null,
+                        buildMode: null,
                         placedItems: this.state.placedItems.map(item => item.type === 'cobot'
                             ? { ...item, config: { ...item.config, collisionStopped: false } }
                             : item
                         )
                     });
                 } else {
-                    this.setState({ isRunning });
+                    this.setState({ isRunning, buildMode: null, teachAction: null, selectedItemId: null });
                 }
             },
             setBuildMode: (buildMode: ItemType | null) => {
@@ -98,7 +99,7 @@ class Store {
                 if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; }
                 if (buildMode === 'camera') { defaultConfig.showBeam = true; }
                 if (buildMode === 'table') { defaultConfig.tableSize = [1.8, 1.8]; defaultConfig.tableHeight = 1; defaultConfig.tableGrid = [2, 2]; defaultConfig.showTableGrid = true; }
-                if (buildMode === 'pile') { defaultConfig.pileCount = 12; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
+                if (buildMode === 'pile') { defaultConfig.pileCount = 0; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'indexed_receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2, 2]; defaultConfig.machineHeight = 1; }
                 
                 this.setState({ buildMode, isRunning: false, selectedItemId: null, teachAction: null, buildConfig: defaultConfig });

@@ -32,9 +32,11 @@ const COBOT_PLATFORM_THICKNESS = 0.03;
 const COBOT_PLATFORM_TOP_Y = COBOT_BODY_H + COBOT_PLATFORM_THICKNESS;
 const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_PEDESTAL_HEIGHT = 0.52;
+const COBOT_PEDESTAL_BOTTOM_RADIUS_MIN = 0.24;
+const COBOT_PEDESTAL_BOTTOM_RADIUS_MAX = 0.32;
 const COBOT_BASE_PIVOT_Y = COBOT_PEDESTAL_HEIGHT;
 const COBOT_MOUNT_REACH_OFFSET = COBOT_BASE_PIVOT_Y + 0.05;
-const IK_BASE_CLEARANCE_RADIUS = 0.62;
+const IK_BASE_CLEARANCE_RADIUS = 0.44;
 const IK_SHOULDER_MIN = -1.1;
 const IK_SHOULDER_MAX = 1.4;
 const IK_ELBOW_MIN = 0.22;
@@ -359,6 +361,19 @@ function itemsNearSlot(slot: Vector3, radius: number, ignoreItem?: SimItem | nul
     });
 }
 
+function slotCaptureRadius(slots: Vector3[], fallback = 0.24): number {
+    if (slots.length < 2) return fallback;
+    let minDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < slots.length; i++) {
+        for (let j = i + 1; j < slots.length; j++) {
+            const d = Vector3.Distance(slots[i], slots[j]);
+            if (d < minDist) minDist = d;
+        }
+    }
+    if (!isFinite(minDist) || minDist <= 0.0001) return fallback;
+    return clamp(minDist * 0.45, 0.18, 0.32);
+}
+
 function getOrganizedDropTarget(
     state: CobotState,
     container: PlacedItem,
@@ -392,7 +407,7 @@ function getOrganizedDropTarget(
         }
     }
 
-    const stackRadius = Math.max(0.16, Math.min(cellW, cellD) * 0.42, partRadiusForSpec(grabbedOrHint) * 0.92);
+    const stackRadius = slotCaptureRadius(slots, Math.max(0.16, Math.min(cellW, cellD) * 0.36));
     const ignored = ignoreItem ?? state.grabbedItem;
     const slotItems = slots.map(sl => itemsNearSlot(sl, stackRadius, ignored));
     const slotCounts = slotItems.map(items => items.length);
@@ -453,17 +468,31 @@ function getOrganizedDropTarget(
     }
     for (let i = 0; i < slots.length; i++) pushUnique(i);
 
-    const preferStacking = sortColor || sortSize || sortShape;
-    let bestIdx = preferStacking
-        ? preferredIndices.find(i => slotCounts[i] > 0 && slotMatchesSort(i)) ?? -1
-        : preferredIndices.find(i => slotCounts[i] === 0 && slotMatchesSort(i)) ?? -1;
-    if (bestIdx < 0) {
-        bestIdx = preferredIndices.find(i => slotCounts[i] === 0 && slotMatchesSort(i)) ?? -1;
-    }
-    if (bestIdx < 0) {
-        bestIdx = preferredIndices.find(i => slotCounts[i] > 0 && slotMatchesSort(i)) ?? -1;
-    }
-    if (bestIdx < 0) return null; // No free slots!
+    const rank = new Map<number, number>();
+    preferredIndices.forEach((idx, order) => rank.set(idx, order));
+    const pickBest = (predicate: (idx: number) => boolean) => {
+        let best = -1;
+        let bestCount = Number.POSITIVE_INFINITY;
+        let bestRank = Number.POSITIVE_INFINITY;
+        for (const idx of preferredIndices) {
+            if (!predicate(idx)) continue;
+            const count = slotCounts[idx];
+            const order = rank.get(idx) ?? Number.POSITIVE_INFINITY;
+            if (count < bestCount || (count === bestCount && order < bestRank)) {
+                best = idx;
+                bestCount = count;
+                bestRank = order;
+            }
+        }
+        return best;
+    };
+
+    // Fill empties first, then stack if all empty slots are exhausted.
+    let bestIdx = pickBest(i => slotCounts[i] === 0 && slotMatchesSort(i));
+    if (bestIdx < 0) bestIdx = pickBest(i => slotCounts[i] === 0);
+    if (bestIdx < 0) bestIdx = pickBest(i => slotMatchesSort(i));
+    if (bestIdx < 0) bestIdx = pickBest(() => true);
+    if (bestIdx < 0) return null;
 
     const target = slots[bestIdx];
     const dropY = stackCenterYAt(target.x, target.z, dropBaseCenterY(state, target, grabbedOrHint), grabbedOrHint, ignored, stackRadius);
@@ -480,16 +509,25 @@ function getSelfPlatformDropTarget(
 ): Vector3 | null {
     const grabbedOrHint = itemHint ?? (state.grabbedItem ? partHint(state.grabbedItem) : null);
     if (!grabbedOrHint || state.stackSlots.length === 0) return null;
-    const stackRadius = Math.max(0.24, partRadiusForSpec(grabbedOrHint) * 0.92);
+    const stackRadius = slotCaptureRadius(state.stackSlots.map(s => s.worldPos), 0.24);
     const itemColor = grabbedOrHint.color;
     const itemSize = grabbedOrHint.size;
     const itemShape = partShape(grabbedOrHint);
     const ignored = ignoreItem ?? state.grabbedItem;
+    state.mountBase.computeWorldMatrix(true);
+    const mountPos = state.mountBase.getAbsolutePosition();
+    const slotBlockedByPedestal = (idx: number) => {
+        const slotPos = state.stackSlots[idx].worldPos;
+        const dx = slotPos.x - mountPos.x;
+        const dz = slotPos.z - mountPos.z;
+        const keepOut = state.mountCollisionRadius + partRadiusForSpec(grabbedOrHint) * 0.72 + 0.02;
+        return Math.sqrt(dx * dx + dz * dz) < keepOut;
+    };
 
     const slotItems = state.stackSlots.map(slot => itemsNearSlot(slot.worldPos, stackRadius, ignored));
     const slotCounts = slotItems.map(items => items.length);
 
-    const hasRoom = (idx: number) => slotCounts[idx] < state.stackSlots[idx].maxStack;
+    const hasRoom = (idx: number) => slotCounts[idx] < state.stackSlots[idx].maxStack && !slotBlockedByPedestal(idx);
     const matchesSort = (idx: number) => slotItems[idx].every(existing =>
         (!sortColor || existing.color === itemColor) &&
         (!sortSize || existing.size === itemSize) &&
@@ -547,8 +585,6 @@ function getSelfPlatformDropTarget(
     }
     for (let i = 0; i < state.stackSlots.length; i++) pushUnique(i);
     if (!sortColor && !sortSize && !sortShape) {
-        state.mountBase.computeWorldMatrix(true);
-        const mountPos = state.mountBase.getAbsolutePosition();
         preferredIndices.sort((a, b) => {
             const da = Vector3.DistanceSquared(state.stackSlots[a].worldPos, mountPos);
             const db = Vector3.DistanceSquared(state.stackSlots[b].worldPos, mountPos);
@@ -556,22 +592,30 @@ function getSelfPlatformDropTarget(
         });
     }
 
-    const preferStacking = sortColor || sortSize || sortShape;
-    let bestIdx = preferStacking
-        ? preferredIndices.find(i => hasRoom(i) && slotCounts[i] > 0 && matchesSort(i)) ?? -1
-        : preferredIndices.find(i => hasRoom(i) && slotCounts[i] === 0 && matchesSort(i)) ?? -1;
-    if (bestIdx < 0) {
-        bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] === 0 && matchesSort(i)) ?? -1;
-    }
-    if (bestIdx < 0 && sortColor && !sortSize && !sortShape) {
-        bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] === 0 && state.stackSlots[i].color === itemColor) ?? -1;
-    }
-    if (bestIdx < 0) {
-        bestIdx = preferredIndices.find(i => hasRoom(i) && slotCounts[i] > 0 && matchesSort(i)) ?? -1;
-    }
-    if (bestIdx < 0) {
-        bestIdx = preferredIndices.find(i => hasRoom(i)) ?? -1;
-    }
+    const rank = new Map<number, number>();
+    preferredIndices.forEach((idx, order) => rank.set(idx, order));
+    const pickBest = (predicate: (idx: number) => boolean) => {
+        let best = -1;
+        let bestCount = Number.POSITIVE_INFINITY;
+        let bestRank = Number.POSITIVE_INFINITY;
+        for (const idx of preferredIndices) {
+            if (!predicate(idx)) continue;
+            const count = slotCounts[idx];
+            const order = rank.get(idx) ?? Number.POSITIVE_INFINITY;
+            if (count < bestCount || (count === bestCount && order < bestRank)) {
+                best = idx;
+                bestCount = count;
+                bestRank = order;
+            }
+        }
+        return best;
+    };
+
+    // Fill all available cells before building tall stacks.
+    let bestIdx = pickBest(i => hasRoom(i) && slotCounts[i] === 0 && matchesSort(i));
+    if (bestIdx < 0) bestIdx = pickBest(i => hasRoom(i) && slotCounts[i] === 0);
+    if (bestIdx < 0) bestIdx = pickBest(i => hasRoom(i) && matchesSort(i));
+    if (bestIdx < 0) bestIdx = pickBest(i => hasRoom(i));
     if (bestIdx < 0) return null;
 
     const slot = state.stackSlots[bestIdx];
@@ -691,15 +735,17 @@ function armHitsObstacle(state: CobotState, obstacles: PlacedItem[]): PlacedItem
     }
     // Self-collision with own pedestal base
     if (state.selfItem) {
+        state.mountBase.computeWorldMatrix(true);
+        const mountCenter = state.mountBase.getAbsolutePosition();
         for (const [index, [a, b, radius]] of links.entries()) {
             if (index <= 1) continue; // Shoulder links originate from base
             const samples = 8;
             for (let i = 0; i <= samples; i++) {
                 const p = Vector3.Lerp(a, b, i / samples);
                 if (p.y > COBOT_PEDESTAL_HEIGHT + radius) continue;
-                const dx = p.x - state.position[0];
-                const dz = p.z - state.position[2];
-                if (Math.sqrt(dx * dx + dz * dz) < 0.38 + radius) return state.selfItem;
+                const dx = p.x - mountCenter.x;
+                const dz = p.z - mountCenter.z;
+                if (Math.sqrt(dx * dx + dz * dz) < state.mountCollisionRadius + radius) return state.selfItem;
             }
         }
     }
@@ -877,6 +923,7 @@ export interface CobotState {
     autoOrganize: boolean;
     idleTarget: Vector3;
     stackSlots: StackSlot[];         // top-platform grid positions
+    mountCollisionRadius: number;    // radial keep-out around pedestal center
     isFull: boolean;
     sensorLights: import("@babylonjs/core").Mesh[];
     lastDroppedItemId?: string;      // skip re-targeting this after auto-drop
@@ -987,6 +1034,12 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     const mountCell = Math.min(cellW, cellD);
     const pedestalRadius = Math.max(0.17, Math.min(0.26, mountCell * 0.32));
     const baseRingRadius = Math.max(0.21, Math.min(0.34, mountCell * 0.38));
+    const pedestalBottomRadius = clamp(
+        Math.max(baseRingRadius + 0.035, pedestalRadius + 0.075),
+        COBOT_PEDESTAL_BOTTOM_RADIUS_MIN,
+        COBOT_PEDESTAL_BOTTOM_RADIUS_MAX
+    );
+    const mountCollisionRadius = Math.max(baseRingRadius + 0.03, pedestalBottomRadius + 0.015);
 
     // ── ARM MOUNT — configurable slot within platform grid ──
     const mountBase = new TransformNode('mountBase', scene);
@@ -995,7 +1048,7 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
 
     // Pedestal / turret base sized to one grid cell (1/9 of platform) and tapered
     const pedestal = MeshBuilder.CreateCylinder('pedestal', { 
-        diameterBottom: 0.64, 
+        diameterBottom: pedestalBottomRadius * 2, 
         diameterTop: pedestalRadius * 2, 
         height: COBOT_PEDESTAL_HEIGHT, 
         tessellation: 32 
@@ -1159,7 +1212,7 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         pickSizes: item.config?.pickSizes || [],
         linkedCameraIds: item.config?.linkedCameraIds || [],
         autoOrganize: item.config?.autoOrganize === true,
-        idleTarget, stackSlots, isFull: false
+        idleTarget, stackSlots, mountCollisionRadius, isFull: false
     };
     return { node: root, state };
 }
@@ -1378,7 +1431,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         const stepPos = step.pos ? new Vector3(step.pos[0], step.pos[1], step.pos[2]) : state.ikTarget.clone();
 
         // Count items on each stack slot (live scan)
-        const STACK_R = 0.25;
+        const STACK_R = slotCaptureRadius(state.stackSlots.map(sl => sl.worldPos), 0.24);
         const slotItems = state.stackSlots.map(sl =>
             simState.items.filter(i =>
                 i.state !== 'dead' && i.state !== 'grabbed' &&
@@ -1933,7 +1986,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     const cx = state.ikTarget.x - mountPos.x;
     const cz = state.ikTarget.z - mountPos.z;
     const cDist = Math.sqrt(cx * cx + cz * cz);
-    const minC = IK_BASE_CLEARANCE_RADIUS + 0.12;
+    const baseClearanceRadius = Math.max(IK_BASE_CLEARANCE_RADIUS, state.mountCollisionRadius + 0.08);
+    const minC = baseClearanceRadius + 0.04;
     if (cDist < minC && cDist > 0.001) {
         const push = minC - cDist;
         state.ikTarget.x += (cx / cDist) * push;
@@ -1954,12 +2008,12 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     let wz = tz;
 
     const rawPlanarDist = Math.sqrt(wx * wx + wz * wz);
-    if (rawPlanarDist > 0.0001 && rawPlanarDist < IK_BASE_CLEARANCE_RADIUS) {
-        const scale = IK_BASE_CLEARANCE_RADIUS / rawPlanarDist;
+    if (rawPlanarDist > 0.0001 && rawPlanarDist < baseClearanceRadius) {
+        const scale = baseClearanceRadius / rawPlanarDist;
         wx *= scale;
         wz *= scale;
     } else if (rawPlanarDist <= 0.0001) {
-        wz = IK_BASE_CLEARANCE_RADIUS;
+        wz = baseClearanceRadius;
     }
 
     const planarDist = Math.sqrt(wx * wx + wz * wz);

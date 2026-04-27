@@ -838,6 +838,81 @@ export const BabylonScene: React.FC = () => {
             return surfaceY;
         }
 
+        function itemYaw(item: PlacedItem): number {
+            return [Math.PI, Math.PI / 2, 0, -Math.PI / 2][item.rotation] ?? 0;
+        }
+
+        function gridSpecForSupport(item: PlacedItem): { cols: number; rows: number; width: number; depth: number } | null {
+            if (item.type === 'cobot') {
+                const stackMatrix = item.config?.stackMatrix || [3, 3];
+                const cols = Math.max(1, Math.min(6, Math.round(stackMatrix[0] || 3)));
+                const rows = Math.max(1, Math.min(6, Math.round(stackMatrix[1] || 3)));
+                return {
+                    cols,
+                    rows,
+                    width: Math.max(0.2, COBOT_PLATFORM_W - COBOT_PLATFORM_MARGIN),
+                    depth: Math.max(0.2, COBOT_PLATFORM_D - COBOT_PLATFORM_MARGIN),
+                };
+            }
+            if (item.type === 'table') {
+                const tableGrid = item.config?.tableGrid || [3, 3];
+                const cols = Math.max(1, Math.min(6, Math.round(tableGrid[0] || 3)));
+                const rows = Math.max(1, Math.min(6, Math.round(tableGrid[1] || 3)));
+                const [width, depth] = item.config?.tableSize || [1.8, 1.8];
+                return { cols, rows, width, depth };
+            }
+            if (item.type === 'pile') {
+                const tableGrid = item.config?.tableGrid || [3, 3];
+                const cols = Math.max(1, Math.min(6, Math.round(tableGrid[0] || 3)));
+                const rows = Math.max(1, Math.min(6, Math.round(tableGrid[1] || 3)));
+                const [width, depth] = item.config?.machineSize || [2, 2];
+                return { cols, rows, width, depth };
+            }
+            return null;
+        }
+
+        function nearestGridSlotForSupport(item: PlacedItem, x: number, z: number): { x: number; z: number; captureRadius: number } | null {
+            const grid = gridSpecForSupport(item);
+            if (!grid) return null;
+
+            const rotY = itemYaw(item);
+            const dx = x - item.position[0];
+            const dz = z - item.position[2];
+            const lx = dx * Math.cos(rotY) - dz * Math.sin(rotY);
+            const lz = dx * Math.sin(rotY) + dz * Math.cos(rotY);
+
+            const cellW = grid.width / grid.cols;
+            const cellD = grid.depth / grid.rows;
+            const col = Math.max(0, Math.min(grid.cols - 1, Math.round((lx + grid.width / 2 - cellW / 2) / cellW)));
+            const row = Math.max(0, Math.min(grid.rows - 1, Math.round((lz + grid.depth / 2 - cellD / 2) / cellD)));
+
+            const slotLx = -grid.width / 2 + cellW * (col + 0.5);
+            const slotLz = -grid.depth / 2 + cellD * (row + 0.5);
+            const slotX = item.position[0] + slotLx * Math.cos(rotY) + slotLz * Math.sin(rotY);
+            const slotZ = item.position[2] - slotLx * Math.sin(rotY) + slotLz * Math.cos(rotY);
+            const captureRadius = Math.max(0.12, Math.min(0.34, Math.min(cellW, cellD) * 0.46));
+            return { x: slotX, z: slotZ, captureRadius };
+        }
+
+        function getTopSupportItem(
+            x: number,
+            z: number,
+            placedItems: PlacedItem[],
+            part?: { shape?: PartShape; size?: PartSize; radiusScale?: number; heightScale?: number; scaleX?: number; scaleZ?: number }
+        ): PlacedItem | null {
+            let topItem: PlacedItem | null = null;
+            let topY = partHalfHeight({ shape: part?.shape, heightScale: part?.heightScale });
+            for (const item of placedItems) {
+                if (!itemSupportsPart(item, x, z)) continue;
+                const centerY = itemSurfaceCenterY(item, part);
+                if (centerY > topY) {
+                    topY = centerY;
+                    topItem = item;
+                }
+            }
+            return topItem;
+        }
+
         function getDriveTile(x: number, z: number, placedItems: PlacedItem[]): PlacedItem | undefined {
             return placedItems.find(item => {
                 if (item.type !== 'belt' && item.type !== 'sender') return false;
@@ -1093,22 +1168,26 @@ export const BabylonScene: React.FC = () => {
                     // Landing surface height (includes cobot top platform level)
                     let surfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems, simItem);
 
-                    // ── Stacking: settle on top of highest part below ─────
-                    const STACK_R = Math.max(0.22, simRad * 0.86); // horizontal snap radius for stacking
-                    simState.items.forEach((other, oi) => {
-                        if (oi === index) return;
-                        if (other.state === 'grabbed' || other.state === 'dead') return;
-                        const dx = other.pos.x - simItem.pos.x;
-                        const dz = other.pos.z - simItem.pos.z;
-                        if (Math.sqrt(dx * dx + dz * dz) < STACK_R) {
-                            // Other part is below this one — its top is a surface
-                            const otherHalf = partHalfHeight(other);
-                            const stackedCenter = other.pos.y + otherHalf + simHalf;
-                            if (stackedCenter > surfY && other.pos.y <= simItem.pos.y + simHalf + 0.002) {
-                                surfY = stackedCenter;
+                    // Stacking: settle on top of highest part below.
+                    const stackCaptureRadius = Math.min(0.34, Math.max(0.2, simRad * 0.82));
+                    const stackedSurfaceYAt = (x: number, z: number) => {
+                        let y = getSupportSurfaceY(x, z, placedItems, simItem);
+                        simState.items.forEach((other, oi) => {
+                            if (oi === index) return;
+                            if (other.state === 'grabbed' || other.state === 'dead') return;
+                            const dx = other.pos.x - x;
+                            const dz = other.pos.z - z;
+                            if (Math.sqrt(dx * dx + dz * dz) < stackCaptureRadius) {
+                                const otherHalf = partHalfHeight(other);
+                                const stackedCenter = other.pos.y + otherHalf + simHalf;
+                                if (stackedCenter > y && other.pos.y <= simItem.pos.y + simHalf + 0.002) {
+                                    y = stackedCenter;
+                                }
                             }
-                        }
-                    });
+                        });
+                        return y;
+                    };
+                    surfY = stackedSurfaceYAt(simItem.pos.x, simItem.pos.z);
 
                     if (simItem.pos.y > surfY + 0.01) {
                         vy -= GRAVITY * delta;
@@ -1138,6 +1217,30 @@ export const BabylonScene: React.FC = () => {
                     }
 
                     // ── Scoring ───────────────────────────────────────────
+                    // Snap settled parts to nearest slot center so stacks stay aligned.
+                    if (!driveTile && Math.abs(vy) < 0.16) {
+                        const supportItem = getTopSupportItem(simItem.pos.x, simItem.pos.z, placedItems, simItem);
+                        if (supportItem && Math.abs(simItem.pos.y - surfY) < 0.035) {
+                            const snapped = nearestGridSlotForSupport(supportItem, simItem.pos.x, simItem.pos.z);
+                            if (snapped) {
+                                const dx = snapped.x - simItem.pos.x;
+                                const dz = snapped.z - simItem.pos.z;
+                                const planarDist = Math.sqrt(dx * dx + dz * dz);
+                                if (planarDist <= snapped.captureRadius) {
+                                    simItem.pos.x = snapped.x;
+                                    simItem.pos.z = snapped.z;
+                                    const snappedY = stackedSurfaceYAt(simItem.pos.x, simItem.pos.z);
+                                    if (simItem.pos.y <= snappedY + 0.05) {
+                                        simItem.pos.y = snappedY;
+                                        vy = 0;
+                                        velY.set(index, 0);
+                                        surfY = snappedY;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (tile?.type === 'receiver') {
                         const dist = Math.sqrt((simItem.pos.x - gx) ** 2 + (simItem.pos.z - gz) ** 2);
                         const targetY = itemSurfaceCenterY(tile, simItem);

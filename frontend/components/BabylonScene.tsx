@@ -23,6 +23,7 @@ const DISC_RADIUS = SIZE_DIAMETER.large / 2;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
 const COBOT_PLATFORM_CENTER_Y = 1.378;
+const COBOT_PLATFORM_TOP_Y = 1.37;
 const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
 const COBOT_PLATFORM_MARGIN = 0.16;
@@ -242,6 +243,8 @@ export const BabylonScene: React.FC = () => {
         const partMeshes: Mesh[] = [];
         const partMeshKinds: string[] = [];
         const velY = new Map<number, number>(); // pool index → vertical velocity
+        const velXZ = new Map<number, Vector3>(); // pool index → planar velocity
+        const spinY = new Map<number, number>(); // pool index → angular yaw speed
 
         HavokPhysics().then((havok) => {
             try {
@@ -267,10 +270,10 @@ export const BabylonScene: React.FC = () => {
             if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Obstructed', detail: 'Obstacle repulsion active while moving' };
             if (cState.isFull) return { health: 'stopped', label: 'Full', detail: 'Container stack is at capacity' };
             if (cState.phase === 'release') return { health: 'running', label: 'Dropping', detail: 'Releasing part onto target' };
-            if (['pick_hover', 'pick_descend', 'pick_attach'].includes(cState.phase)) {
+            if (['pick_hover', 'pick_descend', 'pick_attach', 'pick_recenter'].includes(cState.phase)) {
                 return { health: 'running', label: 'Picking', detail: 'Aligning with pickup target' };
             }
-            if (['hover_drop', 'descend_drop'].includes(cState.phase)) {
+            if (['hover_drop', 'descend_drop', 'drop_recenter'].includes(cState.phase)) {
                 return { health: 'running', label: 'Placing', detail: 'Approaching drop position' };
             }
             if (['lift', 'transit_drop', 'next', 'wait_step'].includes(cState.phase)) {
@@ -533,13 +536,25 @@ export const BabylonScene: React.FC = () => {
                 range.parent = teachZoneRoot;
             }
             if (showPoints) {
-                (selected.config?.program || []).forEach((step, idx) => {
+                const program = selected.config?.program || [];
+                const teachSteps: Array<{ action: 'pick' | 'drop'; pos: [number, number, number]; key: string; synthetic?: boolean }> = [];
+                program.forEach((step, idx) => {
                     if ((step.action !== 'pick' && step.action !== 'drop') || !step.pos) return;
+                    teachSteps.push({ action: step.action, pos: step.pos as [number, number, number], key: String(idx) });
+                });
+                if (!program.some(step => step.action === 'drop')) {
+                    const autoDropPos: [number, number, number] = [
+                        selected.position[0],
+                        selected.position[1] + COBOT_PLATFORM_CENTER_Y,
+                        selected.position[2],
+                    ];
+                    teachSteps.push({ action: 'drop', pos: autoDropPos, key: 'auto_drop_center', synthetic: true });
+                }
+                teachSteps.forEach((step, idx) => {
                     const mat = step.action === 'pick' ? pickZoneMat : dropZoneMat;
-                    const cMat = step.action === 'pick' ? dropCoreMat : pickCoreMat;
                     const y = Math.max(0.06, step.pos[1] + 0.03);
                     
-                    const ball = MeshBuilder.CreateSphere(`teach_${step.action}_ball_${idx}`, {
+                    const ball = MeshBuilder.CreateSphere(`teach_${step.action}_ball_${step.key}_${idx}`, {
                         diameter: 0.34,
                         segments: 24,
                     }, scene);
@@ -551,13 +566,13 @@ export const BabylonScene: React.FC = () => {
                     const surfaceY = getSupportSurfaceY(step.pos[0], step.pos[2], st.placedItems);
                     const isClipping = step.pos[1] < surfaceY - 0.04;
 
-                    if (isClipping) {
-                        const core = MeshBuilder.CreateSphere(`teach_${step.action}_core_${idx}`, {
+                    if (isClipping || step.synthetic) {
+                        const core = MeshBuilder.CreateSphere(`teach_${step.action}_core_${step.key}_${idx}`, {
                             diameter: 0.18, // slightly larger so it's obvious
                             segments: 16,
                         }, scene);
                         core.position.copyFrom(ball.position);
-                        core.material = dropCoreMat; // Always red for warning
+                        core.material = dropCoreMat; // Always red for warning / fallback drop point
                         core.isPickable = false;
                         core.parent = teachZoneRoot;
                         core.renderingGroupId = 2;
@@ -651,6 +666,10 @@ export const BabylonScene: React.FC = () => {
                 for (const id of [...previewCams.keys()]) disposeCameraPreview(id);
                 return;
             }
+            const previewFps = Math.max(1, Math.min(30, Math.round(st.cameraPreviewFps || 8)));
+            const frameIntervalMs = Math.max(33, Math.round(1000 / previewFps));
+            const previewWidth = Math.max(160, Math.min(1024, Math.round(st.cameraPreviewWidth || 320)));
+            const previewHeight = Math.max(100, Math.min(768, Math.round(st.cameraPreviewHeight || 200)));
             const camItem = selected;
             for (const id of [...previewCams.keys()]) {
                 if (id !== camItem.id) disposeCameraPreview(id);
@@ -666,8 +685,18 @@ export const BabylonScene: React.FC = () => {
             }
 
             let rtt = previewRTTs.get(camItem.id);
+            if (rtt) {
+                const sz = rtt.getSize();
+                if (sz.width !== previewWidth || sz.height !== previewHeight) {
+                    const idx = scene.customRenderTargets.indexOf(rtt);
+                    if (idx >= 0) scene.customRenderTargets.splice(idx, 1);
+                    rtt.dispose();
+                    previewRTTs.delete(camItem.id);
+                    rtt = undefined;
+                }
+            }
             if (!rtt) {
-                rtt = new RenderTargetTexture(`preview_rtt_${camItem.id}`, { width: 320, height: 200 }, scene, false, false);
+                rtt = new RenderTargetTexture(`preview_rtt_${camItem.id}`, { width: previewWidth, height: previewHeight }, scene, false, false);
                 rtt.activeCamera = feedCam;
                 rtt.samples = 1;
                 scene.customRenderTargets.push(rtt);
@@ -701,7 +730,7 @@ export const BabylonScene: React.FC = () => {
 
             const now = performance.now();
             const lastAt = previewCaptureAt.get(camItem.id) ?? 0;
-            if (now - lastAt < 140) return;
+            if (now - lastAt < frameIntervalMs) return;
             if (previewPending.has(camItem.id)) return;
             previewCaptureAt.set(camItem.id, now);
             previewPending.add(camItem.id);
@@ -968,7 +997,7 @@ export const BabylonScene: React.FC = () => {
             if (['sender', 'receiver', 'indexed_receiver'].includes(item.type)) return item.config?.machineHeight || TILE_CENTER_Y;
             if (item.type === 'pile') return item.config?.machineHeight || 0.7;
             if (item.type === 'table') return item.config?.tableHeight || TABLE_CENTER_Y;
-            if (item.type === 'cobot') return COBOT_PLATFORM_CENTER_Y - DEFAULT_PART_HALF;
+            if (item.type === 'cobot') return COBOT_PLATFORM_TOP_Y;
             return 0;
         }
 
@@ -1213,6 +1242,8 @@ export const BabylonScene: React.FC = () => {
                 });
                 partMeshes.forEach(m => { if (m) m.isVisible = false; });
                 velY.clear();
+                velXZ.clear();
+                spinY.clear();
                 return;
             }
             if (isPaused) {
@@ -1318,6 +1349,8 @@ export const BabylonScene: React.FC = () => {
                     mesh.isVisible = false;
                     mesh.position.set(0, -100, 0);
                     velY.delete(index);
+                    velXZ.delete(index);
+                    spinY.delete(index);
                     return;
                 }
 
@@ -1335,9 +1368,14 @@ export const BabylonScene: React.FC = () => {
                     mesh.position.copyFrom(simItem.pos);
                     mesh.rotation.y = simItem.rotY;
                     velY.set(index, 0);
+                    const planar = velXZ.get(index) ?? Vector3.Zero();
+                    planar.set(0, 0, 0);
+                    velXZ.set(index, planar);
+                    spinY.set(index, 0);
                 } else {
                     // ── Manual gravity ────────────────────────────────────
                     let vy = velY.get(index) ?? 0;
+                    const planarVel = velXZ.get(index) ?? Vector3.Zero();
 
                     const gx = Math.round(simItem.pos.x / 2.5) * 2.5;
                     const gz = Math.round(simItem.pos.z / 2.5) * 2.5;
@@ -1386,31 +1424,67 @@ export const BabylonScene: React.FC = () => {
 
                     // ── Belt / sender push ────────────────────────────────
                     const driveTile = getDriveTile(simItem.pos.x, simItem.pos.z, placedItems);
-                    if (driveTile && Math.abs(simItem.pos.y - itemSurfaceCenterY(driveTile, simItem)) < 0.05) {
-                        const spd = driveTile.config?.speed || 2;
+                    if (driveTile && Math.abs(simItem.pos.y - itemSurfaceCenterY(driveTile, simItem)) < 0.06) {
+                        const spd = (driveTile.config?.speed || 2) * 0.92;
                         const r = driveTile.rotation;
-                        simItem.pos.x += (r === 1 ? spd : r === 3 ? -spd : 0) * delta;
-                        simItem.pos.z += (r === 2 ? spd : r === 0 ? -spd : 0) * delta;
+                        const targetVx = (r === 1 ? spd : r === 3 ? -spd : 0);
+                        const targetVz = (r === 2 ? spd : r === 0 ? -spd : 0);
+                        planarVel.x += (targetVx - planarVel.x) * Math.min(1, delta * 6.5);
+                        planarVel.z += (targetVz - planarVel.z) * Math.min(1, delta * 6.5);
                         const drivenSurfY = getSupportSurfaceY(simItem.pos.x, simItem.pos.z, placedItems, simItem);
                         if (drivenSurfY >= itemSurfaceCenterY(driveTile, simItem) - 0.01 && simItem.pos.y < drivenSurfY) {
                             simItem.pos.y = drivenSurfY;
                             velY.set(index, 0);
                         }
+                    } else {
+                        const friction = Math.max(0, 1 - delta * (Math.abs(vy) < 0.08 ? 4.2 : 2.6));
+                        planarVel.x *= friction;
+                        planarVel.z *= friction;
                     }
+                    const planarSpeed = Math.sqrt(planarVel.x * planarVel.x + planarVel.z * planarVel.z);
+                    const maxPlanarSpeed = driveTile ? 3.2 : 1.35;
+                    if (planarSpeed > maxPlanarSpeed && planarSpeed > 0.0001) {
+                        const s = maxPlanarSpeed / planarSpeed;
+                        planarVel.x *= s;
+                        planarVel.z *= s;
+                    }
+                    simItem.pos.x += planarVel.x * delta;
+                    simItem.pos.z += planarVel.z * delta;
+                    velXZ.set(index, planarVel);
+
+                    let yawVel = spinY.get(index) ?? 0;
+                    yawVel += (planarVel.length() * 0.22 - yawVel) * Math.min(1, delta * 4.5);
+                    if (!driveTile && Math.abs(planarVel.x) + Math.abs(planarVel.z) < 0.02) {
+                        yawVel *= Math.max(0, 1 - delta * 4.8);
+                    }
+                    spinY.set(index, yawVel);
+                    simItem.rotY += yawVel * delta;
 
                     // ── Scoring ───────────────────────────────────────────
                     // Snap settled parts to nearest slot center so stacks stay aligned.
                     if (!driveTile && Math.abs(vy) < 0.16) {
                         const supportItem = getTopSupportItem(simItem.pos.x, simItem.pos.z, placedItems, simItem);
+                        const restingOnStaticSupport = !!supportItem && !['belt', 'sender'].includes(supportItem.type) && Math.abs(simItem.pos.y - surfY) < 0.05;
+                        const planarSpeed = Math.sqrt(planarVel.x * planarVel.x + planarVel.z * planarVel.z);
+                        if (restingOnStaticSupport) {
+                            planarVel.x *= Math.max(0, 1 - delta * 18);
+                            planarVel.z *= Math.max(0, 1 - delta * 18);
+                            if (Math.abs(planarVel.x) + Math.abs(planarVel.z) < 0.015) {
+                                planarVel.x = 0;
+                                planarVel.z = 0;
+                            }
+                            velXZ.set(index, planarVel);
+                        }
                         if (supportItem && Math.abs(simItem.pos.y - surfY) < 0.035) {
                             const snapped = nearestGridSlotForSupport(supportItem, simItem.pos.x, simItem.pos.z);
                             if (snapped) {
                                 const dx = snapped.x - simItem.pos.x;
                                 const dz = snapped.z - simItem.pos.z;
                                 const planarDist = Math.sqrt(dx * dx + dz * dz);
-                                if (planarDist <= snapped.captureRadius) {
-                                    simItem.pos.x = snapped.x;
-                                    simItem.pos.z = snapped.z;
+                                const maxSnapDist = Math.min(snapped.captureRadius, 0.14);
+                                if (planarDist <= maxSnapDist && planarSpeed < 0.08) {
+                                    simItem.pos.x += (snapped.x - simItem.pos.x) * Math.min(1, delta * 4.5);
+                                    simItem.pos.z += (snapped.z - simItem.pos.z) * Math.min(1, delta * 4.5);
                                     const snappedY = stackedSurfaceYAt(simItem.pos.x, simItem.pos.z);
                                     if (simItem.pos.y <= snappedY + 0.05) {
                                         simItem.pos.y = snappedY;
@@ -1449,7 +1523,24 @@ export const BabylonScene: React.FC = () => {
                 }
             });
 
-            simState.items = simState.items.filter(i => i.state !== 'dead');
+            if (simState.items.some(i => i.state === 'dead')) {
+                const kept: typeof simState.items = [];
+                const nextVelY = new Map<number, number>();
+                const nextVelXZ = new Map<number, Vector3>();
+                const nextSpinY = new Map<number, number>();
+                simState.items.forEach((item, oldIdx) => {
+                    if (item.state === 'dead') return;
+                    const newIdx = kept.length;
+                    kept.push(item);
+                    if (velY.has(oldIdx)) nextVelY.set(newIdx, velY.get(oldIdx)!);
+                    if (velXZ.has(oldIdx)) nextVelXZ.set(newIdx, velXZ.get(oldIdx)!.clone());
+                    if (spinY.has(oldIdx)) nextSpinY.set(newIdx, spinY.get(oldIdx)!);
+                });
+                simState.items = kept;
+                velY.clear(); nextVelY.forEach((v, k) => velY.set(k, v));
+                velXZ.clear(); nextVelXZ.forEach((v, k) => velXZ.set(k, v));
+                spinY.clear(); nextSpinY.forEach((v, k) => spinY.set(k, v));
+            }
 
             // ── Part collision repulsion (belt/floor level only) ────
             const partSpacing = (a: typeof simState.items[0], b: typeof simState.items[0]) => partRadius(a) + partRadius(b);
@@ -1457,7 +1548,7 @@ export const BabylonScene: React.FC = () => {
             
             const isRepellable = (item: typeof items[0]) => {
                 if (item.state !== 'free') return false;
-                if (item.pos.y > 0.65) return false;
+                if (item.pos.y > 0.95) return false;
                 if (item.pos.y < 0.1) return true; // Always repel items on the floor!
                 const gx = Math.round(item.pos.x / 2.5) * 2.5;
                 const gz = Math.round(item.pos.z / 2.5) * 2.5;
@@ -1480,12 +1571,20 @@ export const BabylonScene: React.FC = () => {
                         items[i].pos.z -= nz * push;
                         items[j].pos.x += nx * push;
                         items[j].pos.z += nz * push;
+                        const vi = velXZ.get(i) ?? Vector3.Zero();
+                        const vj = velXZ.get(j) ?? Vector3.Zero();
+                        vi.x -= nx * push * 2.8;
+                        vi.z -= nz * push * 2.8;
+                        vj.x += nx * push * 2.8;
+                        vj.z += nz * push * 2.8;
+                        velXZ.set(i, vi);
+                        velXZ.set(j, vj);
                     }
                 }
                 
                 // Item-to-Machine repulsion
                 for (const machine of placedItems) {
-                    if (['belt', 'camera', 'pile', 'table'].includes(machine.type)) continue;
+                    if (['belt', 'camera', 'pile', 'table', 'sender', 'receiver', 'indexed_receiver'].includes(machine.type)) continue;
                     const w = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[0] || 2);
                     const d = machine.type === 'cobot' ? 2.15 : (machine.config?.machineSize?.[1] || 2);
                     const radius = partRadius(items[i]) + 0.06;
@@ -1512,11 +1611,23 @@ export const BabylonScene: React.FC = () => {
                         const push = radius - dist;
                         items[i].pos.x += (dx / dist) * push;
                         items[i].pos.z += (dz / dist) * push;
+                        const vi = velXZ.get(i) ?? Vector3.Zero();
+                        vi.x += (dx / dist) * push * 2.2;
+                        vi.z += (dz / dist) * push * 2.2;
+                        velXZ.set(i, vi);
                     } else if (distSq <= 0.00001) {
                         items[i].pos.x += radius;
                     }
                 }
             }
+
+            // Update mesh transforms after repulsion/settling so visuals stay in sync this frame.
+            simState.items.forEach((simItem, index) => {
+                const mesh = partMeshes[index];
+                if (!mesh || simItem.state === 'dead') return;
+                mesh.position.copyFrom(simItem.pos);
+                mesh.rotation.y = simItem.rotY;
+            });
 
             // Hide unused pool slots
             for (let i = simState.items.length; i < partMeshes.length; i++) {

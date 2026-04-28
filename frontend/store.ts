@@ -94,6 +94,9 @@ const initialState = loadState() || {
     score: 0,
     placedItems: defaultItems,
     partTemplates: cloneDefaultPartTemplates(),
+    cameraPreviewFps: 8,
+    cameraPreviewWidth: 320,
+    cameraPreviewHeight: 200,
 };
 
 class Store {
@@ -111,6 +114,9 @@ class Store {
             isRunning: false,
             isPaused: false,
             simSpeedMult: 1,
+            cameraPreviewFps: Math.max(1, Math.min(30, Math.round(initialState.cameraPreviewFps ?? 8))),
+            cameraPreviewWidth: Math.max(160, Math.min(1024, Math.round(initialState.cameraPreviewWidth ?? 320))),
+            cameraPreviewHeight: Math.max(100, Math.min(768, Math.round(initialState.cameraPreviewHeight ?? 200))),
             buildMode: null,
             draftPlacement: null,
             buildRotation: 0,
@@ -147,6 +153,11 @@ class Store {
             },
             setIsPaused: (isPaused: boolean) => this.setState({ isPaused }),
             setSimSpeedMult: (mult: number) => this.setState({ simSpeedMult: Math.max(0.2, Math.min(10, mult)) }),
+            setCameraPreviewFps: (fps: number) => this.setState({ cameraPreviewFps: Math.max(1, Math.min(30, Math.round(fps))) }),
+            setCameraPreviewResolution: (width: number, height: number) => this.setState({
+                cameraPreviewWidth: Math.max(160, Math.min(1024, Math.round(width))),
+                cameraPreviewHeight: Math.max(100, Math.min(768, Math.round(height))),
+            }),
             setBuildMode: (buildMode: ItemType | null) => {
                 let defaultConfig: ItemConfig = { speed: 1 };
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.spawnTemplateId = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
@@ -268,8 +279,15 @@ class Store {
         this.listeners.forEach(l => l());
         
         try {
-            const { credits, placedItems, partTemplates } = this.state;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ credits, placedItems, partTemplates }));
+            const { credits, placedItems, partTemplates, cameraPreviewFps, cameraPreviewWidth, cameraPreviewHeight } = this.state;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                credits,
+                placedItems,
+                partTemplates,
+                cameraPreviewFps,
+                cameraPreviewWidth,
+                cameraPreviewHeight
+            }));
         } catch (e) {
             console.warn("Failed to save state to localStorage", e);
         }

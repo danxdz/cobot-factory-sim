@@ -2,7 +2,7 @@
 import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
-import { simState } from '../simState';
+import { simState, SimItem } from '../simState';
 import { PartPreview3D } from './PartPreview3D';
 
 const PICK_COLORS = [
@@ -22,12 +22,19 @@ const PART_COLORS = [
     { label: 'Purple', value: '#a855f7' },
 ];
 const PROGRAM_ACTIONS: ProgramAction[] = ['move', 'pick', 'drop', 'wait'];
+const CAMERA_PREVIEW_RESOLUTIONS = [
+    { label: '320x200', width: 320, height: 200 },
+    { label: '640x400', width: 640, height: 400 },
+    { label: '800x500', width: 800, height: 500 },
+] as const;
 const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
 const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_PLATFORM_TOP_Y = 1.34 + 0.03;
 const COBOT_SLOT_RADIUS = 0.28;
 const PART_THICKNESS = 0.025;
+const TILE_CENTER_Y = 0.545;
+const TABLE_CENTER_Y = 0.458;
 
 type CobotSlot = {
     col: number;
@@ -58,6 +65,45 @@ function cobotSlotsWorld(item: PlacedItem, cols: number, rows: number): CobotSlo
         }
     }
     return slots;
+}
+
+function itemSurfaceTopForDashboard(item: PlacedItem): number {
+    if (item.type === 'belt') return item.position[1] + (item.config?.beltHeight || TILE_CENTER_Y);
+    if (item.type === 'table') return item.position[1] + (item.config?.tableHeight || TABLE_CENTER_Y);
+    if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) return item.position[1] + (item.config?.machineHeight || TILE_CENTER_Y);
+    if (item.type === 'cobot') return item.position[1] + COBOT_PLATFORM_TOP_Y;
+    return 0;
+}
+
+function itemFootprintContains(item: PlacedItem, x: number, z: number, pad = 0): boolean {
+    if (item.type === 'camera') return false;
+    const dx = Math.abs(x - item.position[0]);
+    const dz = Math.abs(z - item.position[2]);
+    const isRotated = (item.rotation || 0) % 2 !== 0;
+    const lx = isRotated ? dz : dx;
+    const lz = isRotated ? dx : dz;
+
+    let w = 2.5;
+    let d = 2.5;
+    if (item.type === 'table') [w, d] = item.config?.tableSize || [2.5, 2.5];
+    else if (item.type === 'belt') [w, d] = item.config?.beltSize || [2.5, 2.5];
+    else if (['sender', 'receiver', 'indexed_receiver', 'pile'].includes(item.type)) [w, d] = item.config?.machineSize || [2.5, 2.5];
+    else if (item.type === 'cobot') { w = COBOT_PLATFORM_W; d = COBOT_PLATFORM_D; }
+    return lx <= w / 2 + pad && lz <= d / 2 + pad;
+}
+
+function supportTypeForPart(part: SimItem, placedItems: PlacedItem[]): ItemType | 'none' {
+    let bestType: ItemType | 'none' = 'none';
+    let bestTop = Number.NEGATIVE_INFINITY;
+    for (const item of placedItems) {
+        if (!itemFootprintContains(item, part.pos.x, part.pos.z)) continue;
+        const top = itemSurfaceTopForDashboard(item);
+        if (top > bestTop) {
+            bestTop = top;
+            bestType = item.type;
+        }
+    }
+    return bestType;
 }
 const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { label: string, value: number, min: number, max: number, step: number, onChange: (val: number) => void, isWidth?: boolean }) => {
     const handleWheel = (e: React.WheelEvent) => {
@@ -179,6 +225,8 @@ export const UI: React.FC = () => {
     const [showHelpModal, setShowHelpModal] = useState(false);
     const [keepBuilding, setKeepBuilding] = useState(false);
     const [cameraPreviewMode, setCameraPreviewMode] = useState<'graph' | 'video'>('video');
+    const [showMasterPanel, setShowMasterPanel] = useState(true);
+    const [masterCameraId, setMasterCameraId] = useState<string | null>(null);
     const [, setCameraFrameTick] = useState(0);
     const { 
         credits, 
@@ -201,6 +249,11 @@ export const UI: React.FC = () => {
         resetFactory,
         simSpeedMult,
         setSimSpeedMult,
+        cameraPreviewFps,
+        cameraPreviewWidth,
+        cameraPreviewHeight,
+        setCameraPreviewFps,
+        setCameraPreviewResolution,
         partTemplates,
         addPartTemplate,
         updatePartTemplate,
@@ -217,6 +270,7 @@ export const UI: React.FC = () => {
     const selectedItem = placedItems.find(i => i.id === selectedItemId);
     const moduleConfigTypes: ItemType[] = ['sender', 'receiver', 'indexed_receiver', 'pile'];
     const cameras = placedItems.filter(i => i.type === 'camera');
+    const cobots = placedItems.filter(i => i.type === 'cobot');
     const selectedMachineState = selectedItem ? machineStates[selectedItem.id] : undefined;
     const selectedLabel = selectedItem?.name || selectedItem?.id || '';
     const teachMinimized = !!teachAction && selectedItem?.type === 'cobot';
@@ -227,6 +281,39 @@ export const UI: React.FC = () => {
             .slice()
             .sort((a, b) => b.confidence - a.confidence)
         : [];
+    const cameraResolutionKey = `${cameraPreviewWidth}x${cameraPreviewHeight}`;
+    const masterCamera = cameras.find(c => c.id === masterCameraId) || cameras[0] || null;
+    const masterCameraDetections = masterCamera
+        ? simState.cameraDetections
+            .filter(det => det.cameraId === masterCamera.id)
+            .slice()
+            .sort((a, b) => b.confidence - a.confidence)
+        : [];
+
+    const liveParts = simState.items.filter(item => item.state !== 'dead');
+    let transitParts = 0;
+    let stockedParts = 0;
+    let looseParts = 0;
+    liveParts.forEach(item => {
+        const supportType = supportTypeForPart(item, placedItems);
+        if (supportType === 'belt' || supportType === 'sender') transitParts += 1;
+        else if (supportType === 'table' || supportType === 'pile' || supportType === 'cobot' || supportType === 'receiver' || supportType === 'indexed_receiver') stockedParts += 1;
+        else looseParts += 1;
+    });
+    const producedEstimate = liveParts.length + score;
+
+    let cobotRunning = 0;
+    let cobotWarning = 0;
+    let cobotStopped = 0;
+    let cobotIdle = 0;
+    cobots.forEach(cobot => {
+        const runtime = machineStates[cobot.id];
+        if (cobot.config?.collisionStopped || cobot.config?.isStopped || runtime?.health === 'stopped') cobotStopped += 1;
+        else if (runtime?.health === 'warning') cobotWarning += 1;
+        else if (runtime?.health === 'running') cobotRunning += 1;
+        else cobotIdle += 1;
+    });
+    const camerasWithFeed = cameras.filter(cam => !!simState.cameraFrames[cam.id]).length;
 
     useEffect(() => {
         setEditingName(false);
@@ -248,11 +335,22 @@ export const UI: React.FC = () => {
     }, [partTemplates, activeTemplateId]);
     useEffect(() => {
         if (selectedItem?.type !== 'camera' || cameraPreviewMode !== 'video') return;
+        const fps = Math.max(1, Math.min(30, Math.round(cameraPreviewFps || 8)));
+        const intervalMs = Math.max(33, Math.round(1000 / fps));
         const timer = window.setInterval(() => {
             setCameraFrameTick(v => v + 1);
-        }, 160);
+        }, intervalMs);
         return () => window.clearInterval(timer);
-    }, [selectedItem?.id, selectedItem?.type, cameraPreviewMode]);
+    }, [selectedItem?.id, selectedItem?.type, cameraPreviewMode, cameraPreviewFps]);
+    useEffect(() => {
+        if (cameras.length === 0) {
+            if (masterCameraId !== null) setMasterCameraId(null);
+            return;
+        }
+        if (!masterCameraId || !cameras.some(cam => cam.id === masterCameraId)) {
+            setMasterCameraId(cameras[0].id);
+        }
+    }, [cameras, masterCameraId]);
     const statusTone = selectedMachineState?.health === 'stopped'
         ? {
             panel: 'border-red-500/60',
@@ -689,6 +787,174 @@ export const UI: React.FC = () => {
                         </div>
                     </div>
                 </div>
+                    <div className="w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 bg-gray-900/92 backdrop-blur-md shadow-2xl overflow-hidden">
+                        <button
+                            onClick={() => setShowMasterPanel(v => !v)}
+                            className="w-full flex items-center justify-between px-3 py-2 bg-cyan-900/25 hover:bg-cyan-800/30 transition-colors"
+                        >
+                            <div className="flex items-center gap-2 text-cyan-100">
+                                <Cpu size={15} />
+                                <span className="text-[11px] font-black tracking-wider">MASTER CONTROL</span>
+                            </div>
+                            {showMasterPanel ? <ChevronDown size={14} className="text-cyan-200" /> : <ChevronRight size={14} className="text-cyan-200" />}
+                        </button>
+                        {showMasterPanel && (
+                            <div className="p-2 sm:p-3 flex flex-col gap-2">
+                                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">RUN STATE</div>
+                                        <div className={`font-black ${!isRunning ? 'text-gray-300' : isPaused ? 'text-amber-300' : 'text-emerald-300'}`}>
+                                            {!isRunning ? 'STOPPED' : isPaused ? 'PAUSED' : 'RUNNING'}
+                                        </div>
+                                    </div>
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">SIM SPEED</div>
+                                        <div className="font-black text-cyan-200">{simSpeedMult.toFixed(2)}x</div>
+                                    </div>
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">PARTS SENT (EST)</div>
+                                        <div className="font-black text-white">{producedEstimate}</div>
+                                    </div>
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">SORTED / DROPPED</div>
+                                        <div className="font-black text-emerald-300">{score}</div>
+                                    </div>
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">STOCKED</div>
+                                        <div className="font-black text-blue-200">{stockedParts}</div>
+                                    </div>
+                                    <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
+                                        <div className="text-gray-500 font-bold">IN TRANSIT</div>
+                                        <div className="font-black text-amber-200">{transitParts}</div>
+                                    </div>
+                                </div>
+
+                                <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-2">
+                                    <div className="text-[10px] font-bold text-gray-500 mb-1">COBOT STATUS</div>
+                                    <div className="grid grid-cols-4 gap-1 text-[10px]">
+                                        <span className="rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 px-1.5 py-1 text-center font-bold">RUN {cobotRunning}</span>
+                                        <span className="rounded bg-amber-500/15 border border-amber-500/40 text-amber-200 px-1.5 py-1 text-center font-bold">WARN {cobotWarning}</span>
+                                        <span className="rounded bg-red-500/15 border border-red-500/40 text-red-200 px-1.5 py-1 text-center font-bold">STOP {cobotStopped}</span>
+                                        <span className="rounded bg-gray-800 border border-gray-700 text-gray-200 px-1.5 py-1 text-center font-bold">IDLE {cobotIdle}</span>
+                                    </div>
+                                </div>
+
+                                <div className="rounded border border-cyan-700/40 bg-cyan-950/20 px-2 py-2 flex flex-col gap-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[10px] font-bold text-cyan-100">CAMERAS ({cameras.length})</span>
+                                        <span className="text-[10px] text-cyan-300">{camerasWithFeed} live</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <label className="flex flex-col gap-1 rounded border border-gray-700 bg-gray-900/40 px-2 py-1.5">
+                                            <span className="text-[9px] font-bold text-gray-500">FPS (GLOBAL)</span>
+                                            <input
+                                                type="range"
+                                                min={2}
+                                                max={24}
+                                                step={1}
+                                                value={cameraPreviewFps}
+                                                onChange={(e) => setCameraPreviewFps(parseInt(e.target.value, 10) || 8)}
+                                                className="w-full"
+                                            />
+                                            <span className="text-[10px] text-cyan-200 font-mono">{cameraPreviewFps} fps</span>
+                                        </label>
+                                        <label className="flex flex-col gap-1 rounded border border-gray-700 bg-gray-900/40 px-2 py-1.5">
+                                            <span className="text-[9px] font-bold text-gray-500">RES (GLOBAL)</span>
+                                            <select
+                                                value={cameraResolutionKey}
+                                                onChange={(e) => {
+                                                    const picked = CAMERA_PREVIEW_RESOLUTIONS.find(r => r.label === e.target.value);
+                                                    if (picked) setCameraPreviewResolution(picked.width, picked.height);
+                                                }}
+                                                className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
+                                            >
+                                                {CAMERA_PREVIEW_RESOLUTIONS.map(opt => (
+                                                    <option key={opt.label} value={opt.label}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                            <span className="text-[10px] text-gray-400">All cameras</span>
+                                        </label>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1 rounded border border-gray-700 bg-gray-900/50 p-1">
+                                        <button
+                                            onClick={() => setCameraPreviewMode('video')}
+                                            className={`rounded py-1 text-[10px] font-bold transition-colors ${cameraPreviewMode === 'video' ? 'bg-cyan-500/25 text-cyan-100 border border-cyan-400/40' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}
+                                        >
+                                            VIDEO
+                                        </button>
+                                        <button
+                                            onClick={() => setCameraPreviewMode('graph')}
+                                            className={`rounded py-1 text-[10px] font-bold transition-colors ${cameraPreviewMode === 'graph' ? 'bg-cyan-500/25 text-cyan-100 border border-cyan-400/40' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}
+                                        >
+                                            GRAPH
+                                        </button>
+                                    </div>
+                                    <select
+                                        value={masterCamera?.id || ''}
+                                        onChange={(e) => setMasterCameraId(e.target.value || null)}
+                                        className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
+                                    >
+                                        {cameras.length === 0 ? (
+                                            <option value="">No cameras available</option>
+                                        ) : cameras.map(cam => (
+                                            <option key={cam.id} value={cam.id}>{cam.name || cam.id}</option>
+                                        ))}
+                                    </select>
+                                    {masterCamera && (
+                                        <>
+                                            {cameraPreviewMode === 'video' ? (
+                                                <div className="h-28 rounded bg-gray-950/80 border border-gray-800 p-1 relative overflow-hidden">
+                                                    {simState.cameraFrames[masterCamera.id] ? (
+                                                        <img
+                                                            src={simState.cameraFrames[masterCamera.id]}
+                                                            alt="Master camera feed"
+                                                            className="w-full h-full object-cover rounded"
+                                                        />
+                                                    ) : (
+                                                        <div className="absolute inset-0 flex items-center justify-center text-[10px] text-gray-600">
+                                                            Waiting for camera video...
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <div className="h-24 rounded bg-gray-950/70 border border-gray-800 p-2 flex items-end gap-1.5">
+                                                    {masterCameraDetections.slice(0, 10).map(det => (
+                                                        <span
+                                                            key={`master_${det.itemId}`}
+                                                            className="w-5 rounded-sm border border-black/20"
+                                                            style={{
+                                                                height: det.size === 'large' ? '2rem' : det.size === 'medium' ? '1.6rem' : '1.2rem',
+                                                                backgroundColor: det.color
+                                                            }}
+                                                        />
+                                                    ))}
+                                                    {masterCameraDetections.length === 0 && (
+                                                        <span className="text-[10px] text-gray-600">No parts currently in view</span>
+                                                    )}
+                                                </div>
+                                            )}
+                                            <div className="rounded border border-gray-800 bg-gray-950/50 max-h-24 overflow-auto">
+                                                {masterCameraDetections.slice(0, 6).map(det => (
+                                                    <div key={`master_row_${det.itemId}`} className="px-2 py-1 text-[10px] text-gray-300 border-b border-gray-900/80 last:border-b-0 flex justify-between gap-2">
+                                                        <span className="truncate">{det.templateName || det.templateId || det.itemId}</span>
+                                                        <span className="text-gray-400">{Math.round(det.confidence * 100)}%</span>
+                                                    </div>
+                                                ))}
+                                                {masterCameraDetections.length === 0 && (
+                                                    <div className="px-2 py-2 text-[10px] text-gray-600">Detection list is empty.</div>
+                                                )}
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                                {looseParts > 0 && (
+                                    <div className="rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
+                                        {looseParts} loose part(s) detected outside supports.
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
             </div>
             </div>
 
@@ -1198,6 +1464,37 @@ export const UI: React.FC = () => {
                                                 onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showBeam: e.target.checked } })}
                                             />
                                         </label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <label className="flex flex-col gap-1 rounded-lg border border-gray-700 bg-gray-900/40 px-2 py-2">
+                                                <span className="text-[9px] font-bold text-gray-500">FPS (GLOBAL)</span>
+                                                <input
+                                                    type="range"
+                                                    min={2}
+                                                    max={24}
+                                                    step={1}
+                                                    value={cameraPreviewFps}
+                                                    onChange={(e) => setCameraPreviewFps(parseInt(e.target.value, 10) || 8)}
+                                                    className="w-full"
+                                                />
+                                                <span className="text-[10px] text-cyan-200 font-mono">{cameraPreviewFps} fps</span>
+                                            </label>
+                                            <label className="flex flex-col gap-1 rounded-lg border border-gray-700 bg-gray-900/40 px-2 py-2">
+                                                <span className="text-[9px] font-bold text-gray-500">RES (GLOBAL)</span>
+                                                <select
+                                                    value={cameraResolutionKey}
+                                                    onChange={(e) => {
+                                                        const picked = CAMERA_PREVIEW_RESOLUTIONS.find(r => r.label === e.target.value);
+                                                        if (picked) setCameraPreviewResolution(picked.width, picked.height);
+                                                    }}
+                                                    className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
+                                                >
+                                                    {CAMERA_PREVIEW_RESOLUTIONS.map(opt => (
+                                                        <option key={opt.label} value={opt.label}>{opt.label}</option>
+                                                    ))}
+                                                </select>
+                                                <span className="text-[10px] text-gray-400">Applied to all cameras</span>
+                                            </label>
+                                        </div>
                                         <div className="grid grid-cols-2 gap-1 rounded border border-gray-700 bg-gray-900/50 p-1">
                                             <button
                                                 onClick={() => setCameraPreviewMode('video')}

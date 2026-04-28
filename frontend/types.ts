@@ -97,6 +97,9 @@ export interface FactoryState {
     isRunning: boolean;
     isPaused: boolean;
     simSpeedMult: number;
+    cameraPreviewFps: number;
+    cameraPreviewWidth: number;
+    cameraPreviewHeight: number;
     partTemplates: PartTemplate[];
     placedItems: PlacedItem[];
     draftPlacement: PlacedItem | null;
@@ -114,6 +117,8 @@ export interface FactoryState {
     setIsRunning: (isRunning: boolean) => void;
     setIsPaused: (isPaused: boolean) => void;
     setSimSpeedMult: (mult: number) => void;
+    setCameraPreviewFps: (fps: number) => void;
+    setCameraPreviewResolution: (width: number, height: number) => void;
     addPartTemplate: (template: Omit<PartTemplate, 'id'>) => string;
     updatePartTemplate: (id: string, updates: Partial<Omit<PartTemplate, 'id'>>) => void;
     removePartTemplate: (id: string) => void;

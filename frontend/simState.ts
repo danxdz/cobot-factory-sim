@@ -23,6 +23,9 @@ export interface SimItem {
 export interface CameraDetection {
     cameraId: string;
     itemId: string;
+    templateId?: string;
+    templateName?: string;
+    shape: PartShape;
     pos: Vector3;
     rotY: number;
     color: string;
@@ -34,11 +37,13 @@ export interface CameraDetection {
 export const simState = {
     items: [] as SimItem[],
     cameraDetections: [] as CameraDetection[],
+    cameraFrames: {} as Record<string, string>,
     cobotWrists: {} as Record<string, Vector3>,
     cobotArmSamples: {} as Record<string, Vector3[]>,
     reset: () => {
         simState.items = [];
         simState.cameraDetections = [];
+        simState.cameraFrames = {};
         simState.cobotWrists = {};
         simState.cobotArmSamples = {};
     }

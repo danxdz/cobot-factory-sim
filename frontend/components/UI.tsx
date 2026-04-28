@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
@@ -124,7 +124,7 @@ const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCan
                 <RangeSlider label="POS Z" min={-10} max={10} step={snapStep} value={item.position[2]} onChange={(v) => patchPosition(2, v)} />
             </div>
             <button onClick={() => updateItem({ rotation: ((item.rotation + 1) % 4) as Direction })} className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white rounded p-1.5 flex items-center justify-center gap-2 font-bold text-[10px] transition-colors">
-                <RotateCw size={12} /> ROTATE 90°
+                <RotateCw size={12} /> ROTATE 90Â°
             </button>
             {hasSize && (
                 <div className="grid grid-cols-3 gap-3">
@@ -175,8 +175,11 @@ export const UI: React.FC = () => {
     const [showPartCreator, setShowPartCreator] = useState(false);
     const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
     const [showStopConfirm, setShowStopConfirm] = useState(false);
+    const [showResetConfirm, setShowResetConfirm] = useState(false);
     const [showHelpModal, setShowHelpModal] = useState(false);
     const [keepBuilding, setKeepBuilding] = useState(false);
+    const [cameraPreviewMode, setCameraPreviewMode] = useState<'graph' | 'video'>('video');
+    const [, setCameraFrameTick] = useState(0);
     const { 
         credits, 
         score,
@@ -218,6 +221,12 @@ export const UI: React.FC = () => {
     const selectedLabel = selectedItem?.name || selectedItem?.id || '';
     const teachMinimized = !!teachAction && selectedItem?.type === 'cobot';
     const activeTemplate = partTemplates.find(t => t.id === activeTemplateId) || null;
+    const selectedCameraDetections = selectedItem?.type === 'camera'
+        ? simState.cameraDetections
+            .filter(det => det.cameraId === selectedItem.id)
+            .slice()
+            .sort((a, b) => b.confidence - a.confidence)
+        : [];
 
     useEffect(() => {
         setEditingName(false);
@@ -237,6 +246,13 @@ export const UI: React.FC = () => {
             setActiveTemplateId(partTemplates[0].id);
         }
     }, [partTemplates, activeTemplateId]);
+    useEffect(() => {
+        if (selectedItem?.type !== 'camera' || cameraPreviewMode !== 'video') return;
+        const timer = window.setInterval(() => {
+            setCameraFrameTick(v => v + 1);
+        }, 160);
+        return () => window.clearInterval(timer);
+    }, [selectedItem?.id, selectedItem?.type, cameraPreviewMode]);
     const statusTone = selectedMachineState?.health === 'stopped'
         ? {
             panel: 'border-red-500/60',
@@ -271,7 +287,7 @@ export const UI: React.FC = () => {
         const now = Date.now();
         if (now - playClicks.time < 500) {
             const newCount = playClicks.count + 1;
-            if (newCount >= 4) { // 5th rapid click total (0,1,2,3,4 → trigger)
+            if (newCount >= 4) { // 5th rapid click total (0,1,2,3,4 â†’ trigger)
                 setCredits(credits + 10000);
                 setPlayClicks({ count: 0, time: 0 });
             } else {
@@ -283,7 +299,7 @@ export const UI: React.FC = () => {
     };
 
     const handleStopClick = () => {
-        // Always show confirm popup — never do a silent reset
+        // Always show confirm popup â€” never do a silent reset
         setShowStopConfirm(true);
     };
 
@@ -317,6 +333,44 @@ export const UI: React.FC = () => {
                 });
             }
         });
+    };
+
+    const exportFactory = () => {
+        const s = localStorage.getItem('cobot-factory-sim-v10') || localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8');
+        if (!s) return;
+        const b = new Blob([s], { type: 'application/json' });
+        const u = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = u;
+        a.download = `factory_${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+    };
+
+    const importFactory = () => {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = '.json';
+        inp.onchange = e => {
+            const f = (e.target as HTMLInputElement).files?.[0];
+            if (!f) return;
+            const r = new FileReader();
+            r.onload = ev => {
+                localStorage.setItem('cobot-factory-sim-v10', ev.target?.result as string);
+                location.reload();
+            };
+            r.readAsText(f);
+        };
+        inp.click();
+    };
+
+    const handleResetClick = () => {
+        setShowResetConfirm(true);
+    };
+
+    const doReset = (saveFirst = false) => {
+        if (saveFirst) exportFactory();
+        resetFactory();
+        setShowResetConfirm(false);
     };
 
     const handleBuildClick = (type: ItemType) => {
@@ -495,7 +549,7 @@ export const UI: React.FC = () => {
         updateProgram((selectedItem.config?.program || []).filter((_, idx) => idx !== index));
     };
 
-    const setCobotOverlay = (patch: { showTeachPoints?: boolean; showArmRange?: boolean }) => {
+    const setCobotOverlay = (patch: { showTeachPoints?: boolean; showArmRange?: boolean; showPathPreview?: boolean }) => {
         if (!selectedItem) return;
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, ...patch } });
     };
@@ -618,7 +672,7 @@ export const UI: React.FC = () => {
                         </button>
                         <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
                         <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
-                            ★
+                            â˜…
                         </div>
                         <div>
                             <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
@@ -757,7 +811,7 @@ export const UI: React.FC = () => {
                                                 onClick={openPartCreator}
                                                 className="px-2 py-1 rounded border border-cyan-600/50 bg-cyan-500/10 text-cyan-200 text-[10px] font-bold hover:bg-cyan-500/20"
                                             >
-                                                ✦ PART CREATOR
+                                                âœ¦ PART CREATOR
                                             </button>
                                         </div>
                                         <select
@@ -768,7 +822,7 @@ export const UI: React.FC = () => {
                                             <option value="any">All Templates (Random)</option>
                                             {partTemplates.map(tpl => (
                                                 <option key={tpl.id} value={tpl.id}>
-                                                    {tpl.name} — {tpl.shape}
+                                                    {tpl.name} â€” {tpl.shape}
                                                 </option>
                                             ))}
                                         </select>
@@ -843,7 +897,7 @@ export const UI: React.FC = () => {
                                                     <>
                                                         {selectedItem.config?.collisionStopped && (
                                                             <div className="bg-red-900/30 border border-red-500 rounded p-2 mb-3">
-                                                                <span className="text-red-400 text-[10px] font-bold block mb-1">⚠️ SAFETY STOP ENGAGED</span>
+                                                                <span className="text-red-400 text-[10px] font-bold block mb-1">âš ï¸ SAFETY STOP ENGAGED</span>
                                                                 <button 
                                                                     onClick={unlockSelectedCobot}
                                                                     className="w-full bg-red-600 hover:bg-red-500 text-white rounded py-1 text-[10px] font-bold"
@@ -927,6 +981,7 @@ export const UI: React.FC = () => {
                                                                                 <span
                                                                                     key={det.itemId}
                                                                                     className="w-5 rounded-sm border border-black/20"
+                                                                                    title={`${det.templateName || det.templateId || det.itemId} â€¢ ${det.shape} â€¢ ${det.size}`}
                                                                                     style={{
                                                                                         height: det.size === 'large' ? '1.6rem' : det.size === 'medium' ? '1.2rem' : '0.95rem',
                                                                                         backgroundColor: det.color
@@ -1143,23 +1198,71 @@ export const UI: React.FC = () => {
                                                 onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showBeam: e.target.checked } })}
                                             />
                                         </label>
-                                        <div className="h-24 rounded bg-gray-950/70 border border-gray-800 p-2 flex items-end gap-2">
-                                            {simState.cameraDetections.filter(det => det.cameraId === selectedItem.id).slice(0, 8).map(det => (
-                                                <span
-                                                    key={det.itemId}
-                                                    className="w-6 rounded-sm border border-black/20"
-                                                    style={{
-                                                        height: det.size === 'large' ? '2.1rem' : det.size === 'medium' ? '1.6rem' : '1.25rem',
-                                                        backgroundColor: det.color
-                                                    }}
-                                                />
+                                        <div className="grid grid-cols-2 gap-1 rounded border border-gray-700 bg-gray-900/50 p-1">
+                                            <button
+                                                onClick={() => setCameraPreviewMode('video')}
+                                                className={`rounded py-1 text-[10px] font-bold transition-colors ${cameraPreviewMode === 'video' ? 'bg-cyan-500/25 text-cyan-100 border border-cyan-400/40' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}
+                                            >
+                                                VIDEO
+                                            </button>
+                                            <button
+                                                onClick={() => setCameraPreviewMode('graph')}
+                                                className={`rounded py-1 text-[10px] font-bold transition-colors ${cameraPreviewMode === 'graph' ? 'bg-cyan-500/25 text-cyan-100 border border-cyan-400/40' : 'bg-gray-800 text-gray-400 border border-gray-700'}`}
+                                            >
+                                                GRAPH
+                                            </button>
+                                        </div>
+                                        {cameraPreviewMode === 'video' ? (
+                                            <div className="h-36 rounded bg-gray-950/80 border border-gray-800 p-1 relative overflow-hidden">
+                                                {simState.cameraFrames[selectedItem.id] ? (
+                                                    <img
+                                                        src={simState.cameraFrames[selectedItem.id]}
+                                                        alt="Camera feed"
+                                                        className="w-full h-full object-cover rounded"
+                                                    />
+                                                ) : (
+                                                    <div className="absolute inset-0 flex items-center justify-center text-[10px] text-gray-600">
+                                                        Waiting for camera video...
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="h-28 rounded bg-gray-950/70 border border-gray-800 p-2 flex items-end gap-1.5">
+                                                {selectedCameraDetections.slice(0, 10).map(det => (
+                                                    <span
+                                                        key={det.itemId}
+                                                        className="w-6 rounded-sm border border-black/20"
+                                                        title={`${det.templateName || det.templateId || det.itemId} • ${det.shape} • ${det.size}`}
+                                                        style={{
+                                                            height: det.size === 'large' ? '2.3rem' : det.size === 'medium' ? '1.8rem' : '1.35rem',
+                                                            backgroundColor: det.color
+                                                        }}
+                                                    />
+                                                ))}
+                                                {selectedCameraDetections.length === 0 && (
+                                                    <span className="text-[10px] text-gray-600">No parts currently in view</span>
+                                                )}
+                                            </div>
+                                        )}
+                                        <div className="rounded border border-gray-800 bg-gray-950/50 max-h-36 overflow-auto">
+                                            <div className="grid grid-cols-[1.35fr_0.8fr_0.8fr_0.85fr_0.7fr] px-2 py-1 text-[9px] font-bold text-gray-500 border-b border-gray-800">
+                                                <span>PART</span><span>COLOR</span><span>SIZE</span><span>SHAPE</span><span>CONF</span>
+                                            </div>
+                                            {selectedCameraDetections.slice(0, 16).map(det => (
+                                                <div key={`row_${det.itemId}`} className="grid grid-cols-[1.35fr_0.8fr_0.8fr_0.85fr_0.7fr] px-2 py-1 text-[10px] text-gray-300 border-b border-gray-900/80 last:border-b-0">
+                                                    <span className="truncate">{det.templateName || det.templateId || det.itemId}</span>
+                                                    <span className="truncate">{det.color}</span>
+                                                    <span className="uppercase">{det.size}</span>
+                                                    <span className="uppercase">{det.shape}</span>
+                                                    <span>{Math.round(det.confidence * 100)}%</span>
+                                                </div>
                                             ))}
-                                            {simState.cameraDetections.filter(det => det.cameraId === selectedItem.id).length === 0 && (
-                                                <span className="text-[10px] text-gray-600">No parts currently in view</span>
+                                            {selectedCameraDetections.length === 0 && (
+                                                <div className="px-2 py-2 text-[10px] text-gray-600">Detection list is empty.</div>
                                             )}
                                         </div>
                                         <div className="text-[10px] text-gray-500">
-                                            Linked cobots can use this camera’s live detections for filtered picking.
+                                            Linked cobots can use this camera's live detections for filtered picking.
                                         </div>
                                     </div>
                                 )}
@@ -1247,6 +1350,14 @@ export const UI: React.FC = () => {
                                                 onChange={(e) => setCobotOverlay({ showArmRange: e.target.checked })}
                                             />
                                         </label>
+                                        <label className="flex items-center justify-between gap-2">
+                                            <span className="text-[9px] font-bold text-gray-400">PATH</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={(selectedItem.config?.showPathPreview ?? true) !== false}
+                                                onChange={(e) => setCobotOverlay({ showPathPreview: e.target.checked })}
+                                            />
+                                        </label>
                                     </div>
                                 )}
                             </div>
@@ -1269,7 +1380,7 @@ export const UI: React.FC = () => {
                                 <button 
                                     onClick={handlePlayClick}
                                     className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning && !isPaused ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
-                                    title={!isRunning ? "Play (Click 5× for +10k credits)" : isPaused ? "Resume" : "Pause"}
+                                    title={!isRunning ? "Play (Click 5Ã— for +10k credits)" : isPaused ? "Resume" : "Pause"}
                                 >
                                     {isRunning && !isPaused ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
                                 </button>
@@ -1286,7 +1397,7 @@ export const UI: React.FC = () => {
                                     </button>
                                     {showStopConfirm && (
                                         <div className="absolute bg-gray-950 border border-red-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-52 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)'}}>
-                                            <p className="text-xs text-red-200 font-bold text-center">⚠ Reset simulation & clear all parts?</p>
+                                            <p className="text-xs text-red-200 font-bold text-center">âš  Reset simulation & clear all parts?</p>
                                             <div className="flex gap-2">
                                                 <button onClick={doStop} className="flex-1 bg-red-500 hover:bg-red-400 text-white text-xs font-bold rounded-lg py-1.5 transition-colors">RESET</button>
                                                 <button onClick={() => setShowStopConfirm(false)} className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-bold rounded-lg py-1.5 transition-colors">CANCEL</button>
@@ -1306,10 +1417,24 @@ export const UI: React.FC = () => {
                                         className="w-20 accent-emerald-500 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                                         title={`Speed: ${simSpeedMult.toFixed(1)}x`}
                                     />
-                                    <div className="flex gap-1">
-                                        <button onClick={resetFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
-                                        <button onClick={() => { const inp = document.createElement('input'); inp.type='file'; inp.accept='.json'; inp.onchange = e => { const f = (e.target as HTMLInputElement).files?.[0]; if(!f)return; const r = new FileReader(); r.onload = ev => { localStorage.setItem('cobot-factory-sim-v10', ev.target?.result as string); location.reload(); }; r.readAsText(f); }; inp.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
-                                        <button onClick={() => { const s = localStorage.getItem('cobot-factory-sim-v10') || localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8'); if(!s)return; const b = new Blob([s],{type:'application/json'}); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href=u; a.download=`factory.json`; a.click(); }} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                    <div className="flex gap-1 relative">
+                                        <button onClick={handleResetClick} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
+                                        <button onClick={importFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
+                                        <button onClick={exportFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                        
+                                        {showResetConfirm && (
+                                            <div className="absolute bg-gray-950 border border-amber-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-64 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 12px)', left:'0'}}>
+                                                <p className="text-xs text-amber-200 font-bold">Reset factory to default scene?</p>
+                                                <p className="text-[10px] text-gray-400 leading-tight">All placed machines and credits will be reset to defaults.</p>
+                                                <div className="flex flex-col gap-1.5 mt-1">
+                                                    <button onClick={() => doReset(true)} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold rounded-lg py-2 transition-colors flex items-center justify-center gap-2">
+                                                        <Download size={12} /> EXPORT & RESET
+                                                    </button>
+                                                    <button onClick={() => doReset(false)} className="w-full bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold rounded-lg py-2 transition-colors">RESET ONLY</button>
+                                                    <button onClick={() => setShowResetConfirm(false)} className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 text-[10px] font-bold rounded-lg py-2 transition-colors">CANCEL</button>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -1333,7 +1458,7 @@ export const UI: React.FC = () => {
                                                 className={`flex items-center gap-2 px-3 py-2 rounded-lg font-bold transition-all ${isGroupActive || hasActiveItem ? 'bg-blue-500 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
                                             >
                                                 {group.icon}
-                                                <span className="text-xs">{group.label}</span>
+                                                <span className="text-xs hidden sm:inline">{group.label}</span>
                                                 <ChevronDown size={14} className={`transition-transform ${isGroupActive ? 'rotate-180' : ''}`} />
                                             </button>
                                             
@@ -1427,7 +1552,7 @@ export const UI: React.FC = () => {
                                                     <span className="w-3 h-3 rounded-full shrink-0 border border-white/20" style={{ backgroundColor: tpl.color }} />
                                                     <div className="min-w-0">
                                                         <div className="text-xs font-bold truncate">{tpl.name}</div>
-                                                        <div className="text-[10px] text-slate-400 uppercase">{tpl.shape} · {tpl.size}</div>
+                                                        <div className="text-[10px] text-slate-400 uppercase">{tpl.shape} Â· {tpl.size}</div>
                                                     </div>
                                                 </button>
                                             );
@@ -1438,7 +1563,7 @@ export const UI: React.FC = () => {
                                 <div className="p-4 overflow-y-auto flex flex-col gap-4">
                                     {activeTemplate ? (
                                         <>
-                                            {/* ─── Row: 3-D preview + name/shape ─── */}
+                                            {/* â”€â”€â”€ Row: 3-D preview + name/shape â”€â”€â”€ */}
                                             <div className="flex gap-4 items-start">
                                                 <div className="shrink-0 rounded-xl overflow-hidden border border-slate-700 bg-[#0d1017]">
                                                     <PartPreview3D template={activeTemplate} width={160} height={130} />
@@ -1469,7 +1594,7 @@ export const UI: React.FC = () => {
                                                 </div>
                                             </div>
 
-                                            {/* ─── Default / spawn colors ─── */}
+                                            {/* â”€â”€â”€ Default / spawn colors â”€â”€â”€ */}
                                             <div className="flex flex-col gap-1.5">
                                                 <span className="text-[11px] font-bold text-slate-400 uppercase">Spawn Colors <span className="text-slate-600 normal-case font-normal">(check multiple for random)</span></span>
                                                 <div className="grid grid-cols-6 gap-1.5">
@@ -1506,11 +1631,11 @@ export const UI: React.FC = () => {
                                                 <div className="flex items-center gap-2">
                                                     <input type="color" value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="h-7 w-9 rounded border border-slate-700 bg-slate-900 p-0.5 cursor-pointer" />
                                                     <input value={activeTemplate.color} onChange={(e) => patchActiveTemplate({ color: e.target.value })} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs font-mono w-24 outline-none focus:border-cyan-500" />
-                                                    <span className="text-[10px] text-slate-500">Click=default · Click again=add to random pool</span>
+                                                    <span className="text-[10px] text-slate-500">Click=default Â· Click again=add to random pool</span>
                                                 </div>
                                             </div>
 
-                                            {/* ─── Spawn sizes (multi) ─── */}
+                                            {/* â”€â”€â”€ Spawn sizes (multi) â”€â”€â”€ */}
                                             <div className="flex flex-col gap-1">
                                                 <span className="text-[11px] font-bold text-slate-400 uppercase">Spawn Sizes <span className="text-slate-600 normal-case font-normal">(check multiple for random)</span></span>
                                                 <div className="flex gap-2">
@@ -1541,24 +1666,24 @@ export const UI: React.FC = () => {
                                                         );
                                                     })}
                                                 </div>
-                                                <p className="text-[10px] text-slate-500">Click=default · Click again=add to random pool</p>
+                                                <p className="text-[10px] text-slate-500">Click=default Â· Click again=add to random pool</p>
                                             </div>
 
-                                            {/* ─── Fine-tune sliders ─── */}
+                                            {/* â”€â”€â”€ Fine-tune sliders â”€â”€â”€ */}
                                             <div className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/50 px-3 py-2.5">
                                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Fine-Tune Geometry</span>
                                                 <div className="grid grid-cols-2 gap-3">
                                                     <label className="flex flex-col gap-1">
                                                         <div className="flex justify-between text-[10px] font-bold text-slate-500">
                                                             <span>RADIUS SCALE</span>
-                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.radiusScale ?? 1).toFixed(2)}×</span>
+                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.radiusScale ?? 1).toFixed(2)}Ã—</span>
                                                         </div>
                                                         <input type="range" min="0.2" max="10" step="0.05" value={activeTemplate.radiusScale ?? 1} onChange={e => patchActiveTemplate({ radiusScale: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
                                                     </label>
                                                     <label className="flex flex-col gap-1">
                                                         <div className="flex justify-between text-[10px] font-bold text-slate-500">
                                                             <span>HEIGHT SCALE</span>
-                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.heightScale ?? 1).toFixed(2)}×</span>
+                                                            <span className="text-cyan-400 font-mono">{(activeTemplate.heightScale ?? 1).toFixed(2)}Ã—</span>
                                                         </div>
                                                         <input type="range" min="0.1" max="10" step="0.05" value={activeTemplate.heightScale ?? 1} onChange={e => patchActiveTemplate({ heightScale: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
                                                     </label>
@@ -1600,14 +1725,14 @@ export const UI: React.FC = () => {
                                                         <label className="flex flex-col gap-1">
                                                             <div className="flex justify-between text-[10px] font-bold text-slate-500">
                                                                 <span>BOX WIDTH</span>
-                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleX ?? 1).toFixed(2)}×</span>
+                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleX ?? 1).toFixed(2)}Ã—</span>
                                                             </div>
                                                             <input type="range" min="0.3" max="2.5" step="0.05" value={activeTemplate.scaleX ?? 1} onChange={e => patchActiveTemplate({ scaleX: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
                                                         </label>
                                                         <label className="flex flex-col gap-1">
                                                             <div className="flex justify-between text-[10px] font-bold text-slate-500">
                                                                 <span>BOX DEPTH</span>
-                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleZ ?? 1).toFixed(2)}×</span>
+                                                                <span className="text-cyan-400 font-mono">{(activeTemplate.scaleZ ?? 1).toFixed(2)}Ã—</span>
                                                             </div>
                                                             <input type="range" min="0.3" max="2.5" step="0.05" value={activeTemplate.scaleZ ?? 1} onChange={e => patchActiveTemplate({ scaleZ: parseFloat(e.target.value) })} className="w-full cursor-pointer accent-cyan-500" />
                                                         </label>
@@ -1643,3 +1768,4 @@ const BuildButton: React.FC<{title: string, cost: number, isActive: boolean, onC
         <span className="text-xs font-mono text-gray-500 mt-1">{cost} CR</span>
     </button>
 );
+

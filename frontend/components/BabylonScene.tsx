@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import {
     Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4,
     HemisphericLight, DirectionalLight, ShadowGenerator,
-    MeshBuilder, PBRMaterial, TransformNode, Mesh,
+    MeshBuilder, PBRMaterial, TransformNode, Mesh, LinesMesh, FreeCamera, RenderTargetTexture,
     PointerEventTypes, PhysicsAggregate, PhysicsShapeType,
     HavokPlugin, AbstractMesh, StandardMaterial, GizmoManager
 } from '@babylonjs/core';
@@ -256,6 +256,10 @@ export const BabylonScene: React.FC = () => {
         // ── ENTITY REGISTRY ─────────────────────────────────────────────────
         const entityNodes = new Map<string, TransformNode>();
         const cobotStates = new Map<string, CobotState>();
+        const previewCams = new Map<string, FreeCamera>();
+        const previewRTTs = new Map<string, RenderTargetTexture>();
+        const previewCaptureAt = new Map<string, number>();
+        const previewPending = new Set<string>();
 
         function cobotRuntimeState(cState: CobotState, isRunning: boolean): MachineRuntimeState {
             if (!isRunning) return { health: 'idle', label: 'Idle', detail: 'Simulation stopped' };
@@ -468,6 +472,8 @@ export const BabylonScene: React.FC = () => {
         linkedCameraMat.emissiveColor = Color3.FromHexString('#22c55e').scale(0.5);
         linkedCameraMat.metallic = 0.1;
         linkedCameraMat.roughness = 0.4;
+        const toolpathRoot = new TransformNode('cobotToolpaths', scene);
+        const toolpathLines = new Map<string, LinesMesh>();
 
         function clearTeachZones() {
             teachZoneRoot.getChildMeshes().forEach(m => m.dispose());
@@ -475,6 +481,11 @@ export const BabylonScene: React.FC = () => {
 
         function clearCameraHighlights() {
             cameraLinkRoot.getChildMeshes().forEach(m => m.dispose());
+        }
+
+        function clearToolpaths() {
+            for (const line of toolpathLines.values()) line.dispose();
+            toolpathLines.clear();
         }
 
         let teachZoneSig = '';
@@ -578,6 +589,150 @@ export const BabylonScene: React.FC = () => {
                     const isLinked = linkedCams.some(c => c.id === cam.id);
                     bodyMesh.material = isLinked ? linkedCameraMat : (bodyMesh as any).__originalMat;
                 }
+            });
+        }
+
+        function updateCobotToolpaths(st: ReturnType<typeof factoryStore.getState>) {
+            const selectedId = st.selectedItemId;
+            const selected = selectedId ? st.placedItems.find(i => i.id === selectedId) : null;
+            if (!selected || selected.type !== 'cobot') {
+                clearToolpaths();
+                return;
+            }
+            const visibleIds = new Set<string>();
+            for (const [id, cState] of cobotStates) {
+                if (id !== selected.id) continue;
+                const previewPath = cState.precalculatedPath?.length
+                    ? cState.precalculatedPath
+                    : [cState.ikTarget.clone(), ...cState.plannedPath.slice(cState.plannedPathCursor)];
+                const points = previewPath.map(p => p.clone());
+                if (points.length < 2) continue;
+                const elevated = points.map((p, idx) => new Vector3(p.x, p.y + 0.03 + idx * 0.0015, p.z));
+                const existing = toolpathLines.get(id);
+                const line = existing
+                    ? MeshBuilder.CreateLines(`toolpath_${id}`, { points: elevated, instance: existing })
+                    : MeshBuilder.CreateLines(`toolpath_${id}`, { points: elevated, updatable: true }, scene);
+                line.parent = toolpathRoot;
+                line.color = Color3.FromHexString('#38bdf8');
+                line.alpha = 0.9;
+                line.isPickable = false;
+                toolpathLines.set(id, line);
+                visibleIds.add(id);
+            }
+            for (const [id, line] of toolpathLines) {
+                if (!visibleIds.has(id)) {
+                    line.dispose();
+                    toolpathLines.delete(id);
+                }
+            }
+        }
+
+        function disposeCameraPreview(id: string) {
+            const rtt = previewRTTs.get(id);
+            if (rtt) {
+                const idx = scene.customRenderTargets.indexOf(rtt);
+                if (idx >= 0) scene.customRenderTargets.splice(idx, 1);
+                rtt.dispose();
+                previewRTTs.delete(id);
+            }
+            const cam = previewCams.get(id);
+            if (cam) {
+                cam.dispose();
+                previewCams.delete(id);
+            }
+            previewCaptureAt.delete(id);
+            previewPending.delete(id);
+            delete simState.cameraFrames[id];
+        }
+
+        function captureSelectedCameraPreview(st: ReturnType<typeof factoryStore.getState>) {
+            const selected = st.selectedItemId ? st.placedItems.find(i => i.id === st.selectedItemId) : null;
+            if (!selected || selected.type !== 'camera') {
+                for (const id of [...previewCams.keys()]) disposeCameraPreview(id);
+                return;
+            }
+            const camItem = selected;
+            for (const id of [...previewCams.keys()]) {
+                if (id !== camItem.id) disposeCameraPreview(id);
+            }
+
+            let feedCam = previewCams.get(camItem.id);
+            if (!feedCam) {
+                feedCam = new FreeCamera(`preview_cam_${camItem.id}`, new Vector3(camItem.position[0], camItem.position[1] + 2, camItem.position[2]), scene);
+                feedCam.fov = 0.9;
+                feedCam.minZ = 0.02;
+                feedCam.maxZ = 25;
+                previewCams.set(camItem.id, feedCam);
+            }
+
+            let rtt = previewRTTs.get(camItem.id);
+            if (!rtt) {
+                rtt = new RenderTargetTexture(`preview_rtt_${camItem.id}`, { width: 320, height: 200 }, scene, false, false);
+                rtt.activeCamera = feedCam;
+                rtt.samples = 1;
+                scene.customRenderTargets.push(rtt);
+                previewRTTs.set(camItem.id, rtt);
+            }
+
+            const camNode = entityNodes.get(camItem.id);
+            const camRoot = camNode?.getChildTransformNodes().find(n => n.name === 'camRoot');
+            const lensMesh = camNode?.getChildMeshes().find(m => m.name === 'lens');
+            if (camRoot) {
+                const worldDir = camRoot.getDirection(new Vector3(0, -1, 0)).normalize();
+                const lensPos = lensMesh?.getAbsolutePosition() ?? camRoot.getAbsolutePosition();
+                const eyePos = lensPos.add(worldDir.scale(0.1));
+                feedCam.position.copyFrom(eyePos);
+                feedCam.setTarget(eyePos.add(worldDir.scale(4)));
+            } else {
+                feedCam.position.set(camItem.position[0], camItem.position[1] + 2.2, camItem.position[2]);
+                feedCam.setTarget(new Vector3(camItem.position[0], camItem.position[1], camItem.position[2]));
+            }
+            feedCam.minZ = 0.03;
+            feedCam.maxZ = 25;
+
+            // Do not render the selected camera's own meshes in its preview feed.
+            const hidden = camNode ? new Set(camNode.getChildMeshes()) : null;
+            rtt.renderList = scene.meshes.filter(mesh => {
+                if (hidden?.has(mesh)) return false;
+                if (mesh === lensMesh) return false;
+                if (!mesh.isEnabled()) return false;
+                return mesh.isVisible;
+            });
+
+            const now = performance.now();
+            const lastAt = previewCaptureAt.get(camItem.id) ?? 0;
+            if (now - lastAt < 140) return;
+            if (previewPending.has(camItem.id)) return;
+            previewCaptureAt.set(camItem.id, now);
+            previewPending.add(camItem.id);
+            // Force a render pass before readback so preview does not stay stale/black.
+            rtt.render(true);
+            Promise.resolve(rtt.readPixels(0, 0)).then((pixels) => {
+                previewPending.delete(camItem.id);
+                if (!pixels) return;
+                const w = rtt!.getSize().width;
+                const h = rtt!.getSize().height;
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return;
+                const img = ctx.createImageData(w, h);
+                const row = w * 4;
+                for (let y = 0; y < h; y++) {
+                    const src = (h - 1 - y) * row;
+                    const dst = y * row;
+                    for (let i = 0; i < row; i += 4) {
+                        img.data[dst + i] = pixels[src + i];
+                        img.data[dst + i + 1] = pixels[src + i + 1];
+                        img.data[dst + i + 2] = pixels[src + i + 2];
+                        img.data[dst + i + 3] = 255;
+                    }
+                }
+                ctx.putImageData(img, 0, 0);
+                simState.cameraFrames[camItem.id] = canvas.toDataURL('image/jpeg', 0.72);
+            }).catch(() => {
+                previewPending.delete(camItem.id);
             });
         }
 
@@ -773,6 +928,25 @@ export const BabylonScene: React.FC = () => {
 
         window.addEventListener('keydown', handleKey);
         function handleKey(e: KeyboardEvent) {
+            const target = e.target as HTMLElement | null;
+            const typing = !!target && (
+                target.tagName === 'INPUT' ||
+                target.tagName === 'TEXTAREA' ||
+                target.tagName === 'SELECT' ||
+                target.isContentEditable
+            );
+            if (typing) return;
+            if (e.code === 'Space' || e.key === ' ') {
+                e.preventDefault();
+                const st = factoryStore.getState();
+                if (!st.isRunning) {
+                    st.setIsRunning(true);
+                    st.setIsPaused(false);
+                } else {
+                    st.setIsPaused(!st.isPaused);
+                }
+                return;
+            }
             if (e.key === 'r' || e.key === 'R') {
                 const st = factoryStore.getState();
                 if (st.buildMode) st.setBuildRotation(((st.buildRotation + 1) % 4) as any);
@@ -940,6 +1114,7 @@ export const BabylonScene: React.FC = () => {
 
         function updateCameraDetections(cameras: PlacedItem[], placedItems: PlacedItem[]) {
             simState.cameraDetections = [];
+            const templatesById = new Map(factoryStore.getState().partTemplates.map(t => [t.id, t]));
             for (const cam of cameras) {
                 for (const item of simState.items) {
                     if (item.state !== 'free') continue;
@@ -952,9 +1127,13 @@ export const BabylonScene: React.FC = () => {
                     const supportPenalty = Math.abs(getSupportSurfaceY(item.pos.x, item.pos.z, placedItems, item) - item.pos.y) > 0.05 ? 0.2 : 0;
                     const confidence = Math.max(0.05, centered - crowdPenalty - supportPenalty);
                     if (confidence < 0.16) continue;
+                    const template = item.templateId ? templatesById.get(item.templateId) : null;
                     simState.cameraDetections.push({
                         cameraId: cam.id,
                         itemId: item.id,
+                        templateId: item.templateId,
+                        templateName: template?.name,
+                        shape: item.shape,
                         pos: item.pos.clone(),
                         rotY: item.rotY,
                         color: item.color,
@@ -979,6 +1158,7 @@ export const BabylonScene: React.FC = () => {
             elapsed += delta;
             updateTeachZones(st);
             updateCameraHighlights(st);
+            updateCobotToolpaths(st);
 
             // Sync layout
             if (placedItems !== prevItems || draftPlacement !== prevDraft) {
@@ -986,6 +1166,7 @@ export const BabylonScene: React.FC = () => {
                 prevDraft = draftPlacement;
                 syncEntities(draftPlacement ? [...placedItems, draftPlacement] : placedItems);
             }
+            captureSelectedCameraPreview(st);
 
             // Sync gizmo state
             if (moveModeItemId !== prevMoveModeItemId) {
@@ -1022,6 +1203,7 @@ export const BabylonScene: React.FC = () => {
             }
 
             if (!isRunning) {
+                clearToolpaths();
                 placedItems.filter(item => item.type === 'cobot').forEach(item => {
                     if (st.machineStates[item.id]?.health === 'stopped') return;
                     const runtime = { health: 'idle', label: 'Idle', detail: 'Simulation stopped' } as MachineRuntimeState;
@@ -1399,6 +1581,8 @@ export const BabylonScene: React.FC = () => {
 
         return () => {
             unsub();
+            clearToolpaths();
+            for (const id of [...previewCams.keys()]) disposeCameraPreview(id);
             window.removeEventListener('resize', onResize);
             window.removeEventListener('keydown', handleKey);
             engine.dispose();

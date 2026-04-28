@@ -44,9 +44,14 @@ const IK_ELBOW_MAX = 2.45;
 const IK_WRIST_MIN = -2.8;
 const IK_WRIST_MAX = 2.8;
 const OVERDRIVE_DECAY_PER_SEC = 0.65;
-const OVERDRIVE_STOP_THRESHOLD = 2.2;
 const OVERDRIVE_HIT_PENALTY = 0.75;
 const OVERDRIVE_STALL_PENALTY = 0.95;
+const AVOIDANCE_BIAS_DECAY = 2.3;
+const AVOIDANCE_MAX_BIAS = 2.1;
+const RETREAT_DURATION = 0.68;
+const RETREAT_BACKOFF = 0.42;
+const MAX_RECOVERY_ATTEMPTS = 3;
+const STUCK_STALL_TIMEOUT = 1.35;
 
 const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
 const SHAPE_BASE_DIAMETER: Record<PartShape, number> = {
@@ -62,6 +67,7 @@ const SHAPE_BASE_HEIGHT: Record<PartShape, number> = {
     pyramid: 0.1,
 };
 const SHAPE_ORDER: PartShape[] = ['disc', 'can', 'box', 'pyramid'];
+const itemMotionTracker = new Map<string, { pos: Vector3; t: number; vel: Vector3 }>();
 
 type PartLike = {
     shape?: PartShape;
@@ -262,6 +268,24 @@ function predictedPickupPos(item: SimItem, obstacles: PlacedItem[], leadTime = P
     return predicted.addInPlace(driveVector(driveTile.rotation).scale(speed * leadTime));
 }
 
+function estimateItemVelocity(state: CobotState, item: SimItem): Vector3 {
+    const now = state.simTime;
+    const tracked = itemMotionTracker.get(item.id);
+    if (!tracked) {
+        itemMotionTracker.set(item.id, { pos: item.pos.clone(), t: now, vel: Vector3.Zero() });
+        return Vector3.Zero();
+    }
+    const dt = now - tracked.t;
+    if (dt > 0.0001) {
+        const rawVel = item.pos.subtract(tracked.pos).scale(1 / dt);
+        const nextVel = Vector3.Lerp(tracked.vel, rawVel, 0.42);
+        tracked.vel.copyFrom(nextVel);
+        tracked.pos.copyFrom(item.pos);
+        tracked.t = now;
+    }
+    return tracked.vel.clone();
+}
+
 function pickupLeadTime(state: CobotState, item: SimItem, baseLead = PICK_LEAD_TIME): number {
     const driveTile = driveTileAt(item.pos.x, item.pos.z, state.obstacles);
     const beltSpeed = driveTile ? (driveTile.config?.speed || 2) * 0.55 : 0;
@@ -293,10 +317,13 @@ function bestDetectionForItem(state: CobotState, item: SimItem) {
 function pickupAimPoint(state: CobotState, item: SimItem, leadTime = PICK_LEAD_TIME): Vector3 {
     const lead = pickupLeadTime(state, item, leadTime);
     const predicted = predictedPickupPos(item, state.obstacles, lead);
+    const motionVel = estimateItemVelocity(state, item);
+    const motionGain = driveTileAt(item.pos.x, item.pos.z, state.obstacles) ? 0.92 : 0.54;
+    predicted.addInPlace(motionVel.scale(lead * motionGain));
     const detection = bestDetectionForItem(state, item);
     if (!detection) return predicted;
     const movingOnDrive = !!driveTileAt(item.pos.x, item.pos.z, state.obstacles);
-    const detectionWeight = movingOnDrive ? 0.14 : 0.34;
+    const detectionWeight = movingOnDrive ? 0.18 : 0.36;
     return Vector3.Lerp(predicted, detection.pos, detectionWeight);
 }
 
@@ -623,19 +650,16 @@ function getSelfPlatformDropTarget(
     return new Vector3(slot.worldPos.x, stackTop, slot.worldPos.z);
 }
 
-function currentDropTarget(state: CobotState): Vector3 | null {
+function computeDropTarget(state: CobotState): Vector3 | null {
     if (!state.grabbedItem) return null;
-    if (state.autoDropTarget && ['transit_drop', 'hover_drop', 'descend_drop', 'release'].includes(state.phase)) {
-        return state.autoDropTarget;
-    }
-    if (!['transit_drop', 'hover_drop', 'descend_drop', 'release'].includes(state.phase)) return null;
+    if (state.autoDropTarget) return state.autoDropTarget.clone();
     if (state.program.length === 0) return null;
     const step = state.program[state.stepIndex % state.program.length];
     if (step?.action !== 'drop' || !step.pos) return null;
-    
-    const container = state.obstacles.find(o => 
-        ['pile', 'table', 'receiver', 'indexed_receiver'].includes(o.type) && 
-        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || o.config?.tableSize?.[0] || (o.type === 'table' ? 1.8 : 2)) / 2 && 
+
+    const container = state.obstacles.find(o =>
+        ['pile', 'table', 'receiver', 'indexed_receiver'].includes(o.type) &&
+        Math.abs(o.position[0] - step.pos![0]) < (o.config?.machineSize?.[0] || o.config?.tableSize?.[0] || (o.type === 'table' ? 1.8 : 2)) / 2 &&
         Math.abs(o.position[2] - step.pos![2]) < (o.config?.machineSize?.[1] || o.config?.tableSize?.[1] || (o.type === 'table' ? 1.8 : 2)) / 2
     );
 
@@ -645,19 +669,25 @@ function currentDropTarget(state: CobotState): Vector3 | null {
     const selfSort = selfSortPreferences(state);
 
     if (state.selfItem && itemFootprintHit(state.selfItem, step.pos[0], step.pos[2], 0.02)) {
-        const selfTarget = getSelfPlatformDropTarget(state, selfSort.sortColor, selfSort.sortSize, selfSort.sortShape);
-        return selfTarget;
+        return getSelfPlatformDropTarget(state, selfSort.sortColor, selfSort.sortSize, selfSort.sortShape);
     }
 
     if (container) {
         const orgTarget = getOrganizedDropTarget(state, container, sortColor, sortSize, sortShape);
         if (orgTarget) return orgTarget;
-
         // Cannot place into destination grid. Fallback to own platform slots.
         return getSelfPlatformDropTarget(state, selfSort.sortColor, selfSort.sortSize, selfSort.sortShape);
     }
-
     return new Vector3(step.pos[0], step.pos[1], step.pos[2]);
+}
+
+function currentDropTarget(state: CobotState): Vector3 | null {
+    if (!state.grabbedItem) return null;
+    if (!['transit_drop', 'hover_drop', 'descend_drop', 'release'].includes(state.phase)) return null;
+    if (state.activeDropTarget) return state.activeDropTarget.clone();
+    const computed = computeDropTarget(state);
+    if (computed) state.activeDropTarget = computed.clone();
+    return computed;
 }
 
 function nextProgramActionIndex(state: CobotState, action: ProgramStep['action']): number | null {
@@ -681,6 +711,25 @@ function dropBaseCenterY(state: CobotState, target: Vector3, part?: PartLike): n
     const supportTop = supportTopAt(target.x, target.z, dropObstacles(state));
     const stackPart = part ?? state.grabbedItem ?? { shape: 'disc' as PartShape, size: 'medium' as PartSize };
     return supportTop + partHalfHeight(stackPart);
+}
+
+function dropPlacementState(state: CobotState) {
+    if (!state.grabbedItem) return null;
+    const target = currentDropTarget(state);
+    if (!target) return null;
+    const stackBaseY = dropBaseCenterY(state, target, state.grabbedItem);
+    const landingY = stackCenterYAt(target.x, target.z, stackBaseY, state.grabbedItem, state.grabbedItem, 0.3);
+    const dx = state.grabbedItem.pos.x - target.x;
+    const dz = state.grabbedItem.pos.z - target.z;
+    const planar = Math.sqrt(dx * dx + dz * dz);
+    const partR = Math.max(DISC_RADIUS, partRadiusForSpec(state.grabbedItem));
+    return {
+        target,
+        landingY,
+        planar,
+        partR,
+        touching: planar <= Math.max(partR * 0.72, 0.16) && state.grabbedItem.pos.y <= landingY + 0.014,
+    };
 }
 
 function segmentHitsMachine(a: Vector3, b: Vector3, obstacle: PlacedItem, radius = 0.08): boolean {
@@ -796,37 +845,274 @@ function applySoftAvoidance(state: CobotState, hit: PlacedItem) {
         away.normalize();
     }
     const hoverY = machineTopY(hit) + 0.36;
+    const heading = state.baseRotY + state.basePivot.rotation.y;
+    const forward = new Vector3(Math.sin(heading), 0, Math.cos(heading));
+    const right = new Vector3(forward.z, 0, -forward.x);
+    const sideSign = state.avoidanceSide !== 0
+        ? state.avoidanceSide
+        : (Vector3.Dot(away, right) >= 0 ? 1 : -1);
+    state.avoidanceSide = sideSign > 0 ? 1 : -1;
+    const lateral = right.scale(state.avoidanceSide);
+
     state.desiredTarget.x += away.x * 0.16;
     state.desiredTarget.z += away.z * 0.16;
+    state.desiredTarget.x += lateral.x * 0.13;
+    state.desiredTarget.z += lateral.z * 0.13;
     state.desiredTarget.y = Math.max(state.desiredTarget.y + 0.16, hoverY, state.position[1] + 0.3);
+    state.avoidanceBias.addInPlace(away.scale(0.92)).addInPlace(lateral.scale(0.64));
+    state.avoidanceBias.x = clamp(state.avoidanceBias.x, -AVOIDANCE_MAX_BIAS, AVOIDANCE_MAX_BIAS);
+    state.avoidanceBias.z = clamp(state.avoidanceBias.z, -AVOIDANCE_MAX_BIAS, AVOIDANCE_MAX_BIAS);
+    state.avoidanceBias.y = Math.max(state.avoidanceBias.y, 0.28);
     state.recoveryTimer = Math.max(state.recoveryTimer, 0.28);
+    state.blockedTimer = Math.max(0, state.blockedTimer - 0.08);
+}
+
+function startRecoveryRetreat(state: CobotState, obstacle: PlacedItem | null) {
+    const heading = state.baseRotY + state.basePivot.rotation.y;
+    const fallbackAway = new Vector3(-Math.sin(heading), 0, -Math.cos(heading));
+    const away = obstacle
+        ? new Vector3(state.ikTarget.x - obstacle.position[0], 0, state.ikTarget.z - obstacle.position[2])
+        : fallbackAway.clone();
+    if (away.lengthSquared() < 0.0001) away.copyFrom(fallbackAway);
+    away.normalize();
+    state.retreatTarget = new Vector3(
+        state.ikTarget.x + away.x * RETREAT_BACKOFF,
+        Math.max(state.ikTarget.y + 0.22, state.position[1] + 1.18),
+        state.ikTarget.z + away.z * RETREAT_BACKOFF
+    );
+    state.retreatTimer = RETREAT_DURATION;
+    state.recoveryAttempts += 1;
     state.blockedTimer = 0;
+    state.recoveryTimer = Math.max(state.recoveryTimer, 0.5);
+    state.pathReplanCooldown = Math.max(state.pathReplanCooldown, 0.5);
 }
 
-function addOverdrivePenalty(state: CobotState, amount: number): boolean {
-    state.overdriveScore = clamp(state.overdriveScore + amount, 0, OVERDRIVE_STOP_THRESHOLD + 1.5);
-    return state.overdriveScore >= OVERDRIVE_STOP_THRESHOLD;
+function normalizeAngle(rad: number): number {
+    let a = rad;
+    while (a <= -Math.PI) a += Math.PI * 2;
+    while (a > Math.PI) a -= Math.PI * 2;
+    return a;
 }
 
-function enterCollisionRecovery(state: CobotState) {
-    state.safetyStopped = true;
-    state.recoveryTimer = 0;
-    state.ikTarget.copyFrom(state.lastSafeIkTarget);
-    state.ikVelocity.setAll(0);
-    if (state.targetedItem?.state === 'targeted') {
-        state.skippedTargetIds[state.targetedItem.id] = state.simTime + PICK_SKIP_COOLDOWN * 3;
-        state.targetedItem.state = 'free';
+function pointSegmentDistSq2D(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+    const abx = bx - ax;
+    const abz = bz - az;
+    const apx = px - ax;
+    const apz = pz - az;
+    const abLenSq = abx * abx + abz * abz;
+    if (abLenSq <= 0.000001) {
+        return apx * apx + apz * apz;
     }
-    if (state.grabbedItem) {
-        state.grabbedItem.state = 'free';
-        state.grabbedItem = null;
-        state.autoDropTarget = null;
+    const t = clamp((apx * abx + apz * abz) / abLenSq, 0, 1);
+    const cx = ax + abx * t;
+    const cz = az + abz * t;
+    const dx = px - cx;
+    const dz = pz - cz;
+    return dx * dx + dz * dz;
+}
+
+function pushPointOutsideBaseKeepout(point: Vector3, mountPos: Vector3, keepout: number): Vector3 {
+    const dx = point.x - mountPos.x;
+    const dz = point.z - mountPos.z;
+    const distSq = dx * dx + dz * dz;
+    const keepoutSq = keepout * keepout;
+    if (distSq >= keepoutSq) return point.clone();
+    if (distSq < 0.000001) {
+        return new Vector3(mountPos.x + keepout, point.y, mountPos.z);
     }
-    state.targetedItem = null;
-    state.targetTimer = 0;
-    state.waitTimer = 0;
-    state.phase = 'idle';
-    state.desiredTarget.copyFrom(state.idleTarget);
+    const dist = Math.sqrt(Math.max(0.000001, distSq));
+    const nx = dx / dist;
+    const nz = dz / dist;
+    return new Vector3(
+        mountPos.x + nx * keepout,
+        point.y,
+        mountPos.z + nz * keepout
+    );
+}
+
+function appendPathSegment(dst: Vector3[], segment: Vector3[]) {
+    if (segment.length === 0) return;
+    if (dst.length === 0) {
+        segment.forEach(p => dst.push(p.clone()));
+        return;
+    }
+    const startAt = Vector3.Distance(dst[dst.length - 1], segment[0]) < 0.02 ? 1 : 0;
+    for (let i = startAt; i < segment.length; i++) {
+        const p = segment[i];
+        const prev = dst[dst.length - 1];
+        if (!prev || Vector3.Distance(prev, p) > 0.02) {
+            dst.push(p.clone());
+        }
+    }
+}
+
+function planToolpath(state: CobotState, start: Vector3, goal: Vector3, mountPos: Vector3, precisePhase: boolean): Vector3[] {
+    const path: Vector3[] = [start.clone()];
+    const baseKeepout = Math.max(IK_BASE_CLEARANCE_RADIUS + 0.14, state.mountCollisionRadius + 0.14);
+    const isManipulation = precisePhase || !!state.grabbedItem;
+    const clearY = Math.max(
+        start.y,
+        goal.y,
+        wallTopAt(goal.x, goal.z, dropObstacles(state)) + (isManipulation ? 0.2 : 0.34),
+        state.position[1] + 0.22
+    );
+
+    if (Math.abs(start.y - clearY) > 0.08) {
+        path.push(new Vector3(start.x, clearY, start.z));
+    }
+    const navStartRaw = path[path.length - 1];
+    const navGoalRaw = new Vector3(goal.x, Math.max(goal.y, isManipulation ? goal.y : clearY * 0.82), goal.z);
+    const navStart = pushPointOutsideBaseKeepout(navStartRaw, mountPos, baseKeepout + 0.04);
+    const navGoal = pushPointOutsideBaseKeepout(navGoalRaw, mountPos, baseKeepout + 0.04);
+    if (Vector3.Distance(navStart, navStartRaw) > 0.01) path.push(navStart.clone());
+    const dSegBaseSq = pointSegmentDistSq2D(mountPos.x, mountPos.z, navStart.x, navStart.z, navGoal.x, navGoal.z);
+    const crossesBase = dSegBaseSq < baseKeepout * baseKeepout;
+
+    if (crossesBase) {
+        const a0 = Math.atan2(navStart.z - mountPos.z, navStart.x - mountPos.x);
+        const a1 = Math.atan2(navGoal.z - mountPos.z, navGoal.x - mountPos.x);
+        const cross = (navStart.x - mountPos.x) * (navGoal.z - mountPos.z) - (navStart.z - mountPos.z) * (navGoal.x - mountPos.x);
+        const side = state.avoidanceSide !== 0 ? state.avoidanceSide : (cross >= 0 ? 1 : -1);
+        state.avoidanceSide = side > 0 ? 1 : -1;
+
+        let delta = normalizeAngle(a1 - a0);
+        if (side > 0 && delta < 0) delta += Math.PI * 2;
+        if (side < 0 && delta > 0) delta -= Math.PI * 2;
+        if (Math.abs(delta) < 0.42) {
+            delta = 0.42 * side;
+        }
+
+        const bypassR = baseKeepout + (isManipulation ? 0.24 : 0.3);
+        const midA = a0 + delta * 0.5;
+        const exitA = a1 - side * 0.2;
+        path.push(new Vector3(
+            mountPos.x + Math.cos(midA) * bypassR,
+            clearY + (isManipulation ? 0.06 : 0.14),
+            mountPos.z + Math.sin(midA) * bypassR
+        ));
+        path.push(new Vector3(
+            mountPos.x + Math.cos(exitA) * bypassR,
+            clearY + (isManipulation ? 0.02 : 0.08),
+            mountPos.z + Math.sin(exitA) * bypassR
+        ));
+    } else if (Math.sqrt((navGoal.x - navStart.x) ** 2 + (navGoal.z - navStart.z) ** 2) > 1.1) {
+        const mid = Vector3.Lerp(navStart, navGoal, 0.5);
+        mid.y = clearY + (isManipulation ? 0.02 : 0.08);
+        path.push(mid);
+    }
+
+    if (Vector3.Distance(navGoal, navGoalRaw) > 0.01) {
+        path.push(navGoal.clone());
+    }
+    if (goal.y + 0.16 < clearY && isManipulation) {
+        path.push(new Vector3(goal.x, clearY, goal.z));
+    }
+    path.push(goal.clone());
+
+    const compact: Vector3[] = [];
+    for (const p of path) {
+        const prev = compact[compact.length - 1];
+        if (!prev || Vector3.Distance(prev, p) > 0.035) {
+            compact.push(p);
+        }
+    }
+    return compact;
+}
+
+function nextPlannedTarget(state: CobotState, mountPos: Vector3, goal: Vector3, precisePhase: boolean): Vector3 {
+    const goalChanged = Vector3.Distance(state.plannedPathGoal, goal) > (precisePhase ? 0.08 : 0.2);
+    const phaseChanged = state.plannedPathPhase !== state.phase;
+    const noPath = state.plannedPath.length < 2;
+    const cursorDone = state.plannedPathCursor >= state.plannedPath.length;
+    const allowGoalDrivenReplan = !isFineAlignPhase(state.phase);
+    const shouldReplan = noPath || phaseChanged || cursorDone || (allowGoalDrivenReplan && goalChanged && state.pathReplanCooldown <= 0);
+    if (shouldReplan) {
+        state.plannedPath = planToolpath(state, state.ikTarget, goal, mountPos, precisePhase);
+        state.plannedPathCursor = Math.min(1, state.plannedPath.length - 1);
+        state.plannedPathGoal.copyFrom(goal);
+        state.plannedPathPhase = state.phase;
+        state.pathReplanCooldown = precisePhase ? 0.24 : 0.34;
+    }
+
+    const reachWp = precisePhase ? 0.08 : 0.16;
+    while (
+        state.plannedPathCursor < state.plannedPath.length - 1 &&
+        Vector3.Distance(state.ikTarget, state.plannedPath[state.plannedPathCursor]) < reachWp
+    ) {
+        state.plannedPathCursor += 1;
+    }
+    return state.plannedPath[state.plannedPathCursor] ?? goal;
+}
+
+function isFineAlignPhase(phase: string): boolean {
+    return phase === 'pick_hover'
+        || phase === 'pick_descend'
+        || phase === 'pick_attach'
+        || phase === 'hover_drop'
+        || phase === 'descend_drop'
+        || phase === 'release';
+}
+
+function resolveFlowGoal(state: CobotState, rawGoal: Vector3): Vector3 {
+    if (state.lockedFlowPhase !== state.phase) {
+        state.lockedFlowPhase = state.phase;
+        state.lockedFlowGoal.copyFrom(rawGoal);
+        return state.lockedFlowGoal.clone();
+    }
+    return state.lockedFlowGoal.clone();
+}
+
+function currentPickTimeout(state: CobotState): number {
+    const item = state.targetedItem;
+    const onDrive = !!(item && driveTileAt(item.pos.x, item.pos.z, state.obstacles));
+    if (state.phase === 'pick_hover') return PICK_TARGET_TIMEOUT + (onDrive ? 1.25 : 0.55);
+    if (state.phase === 'pick_descend') return PICK_TARGET_TIMEOUT + (onDrive ? 1.0 : 0.45);
+    if (state.phase === 'pick_attach') return PICK_TARGET_TIMEOUT + (onDrive ? 0.85 : 0.35);
+    return PICK_TARGET_TIMEOUT;
+}
+
+function buildPrecalculatedToolpathPreview(state: CobotState, mountPos: Vector3, flowGoal: Vector3, precisePhase: boolean): Vector3[] {
+    const preview: Vector3[] = [state.ikTarget.clone()];
+    appendPathSegment(preview, planToolpath(state, state.ikTarget, flowGoal, mountPos, precisePhase));
+
+    if (state.program.length === 0) return preview;
+
+    let cursor = preview[preview.length - 1].clone();
+    const stepsToPlan = Math.min(state.program.length, 16);
+    for (let offset = 0; offset < stepsToPlan; offset++) {
+        const idx = (state.stepIndex + offset) % state.program.length;
+        const step = state.program[idx];
+        if (!step.pos) continue;
+        if (step.action !== 'move' && step.action !== 'pick' && step.action !== 'drop') continue;
+
+        const pos = new Vector3(step.pos[0], step.pos[1], step.pos[2]);
+        const manipulation = step.action === 'pick' || step.action === 'drop';
+        const hoverOffset = step.action === 'pick'
+            ? PICK_HOVER_CLEARANCE
+            : step.action === 'drop'
+                ? DROP_HOVER_CLEARANCE
+                : 0.22;
+        const safeHoverY = Math.max(
+            pos.y + hoverOffset,
+            wallTopAt(pos.x, pos.z, dropObstacles(state)) + (manipulation ? 0.12 : 0.2),
+            state.position[1] + (manipulation ? 1.22 : 1.35)
+        );
+        const hoverTarget = new Vector3(pos.x, safeHoverY, pos.z);
+        appendPathSegment(preview, planToolpath(state, cursor, hoverTarget, mountPos, false));
+        cursor = hoverTarget;
+
+        if (manipulation) {
+            const touchY = step.action === 'pick'
+                ? pos.y + PICK_DESCEND_CLEARANCE
+                : pos.y + DROP_CLEARANCE;
+            const contactTarget = new Vector3(pos.x, touchY, pos.z);
+            appendPathSegment(preview, planToolpath(state, cursor, contactTarget, mountPos, true));
+            cursor = contactTarget;
+            appendPathSegment(preview, planToolpath(state, cursor, hoverTarget, mountPos, true));
+            cursor = hoverTarget;
+        }
+    }
+    return preview;
 }
 
 function pbr(scene: Scene, hex: string, metallic = 0.5, roughness = 0.4, alpha = 1): PBRMaterial {
@@ -900,6 +1186,19 @@ export interface CobotState {
     safetyStopped: boolean;
     recoveryTimer: number;
     overdriveScore: number;
+    avoidanceSide: -1 | 0 | 1;
+    avoidanceBias: Vector3;
+    retreatTarget: Vector3 | null;
+    retreatTimer: number;
+    recoveryAttempts: number;
+    plannedPath: Vector3[];
+    plannedPathCursor: number;
+    plannedPathGoal: Vector3;
+    plannedPathPhase: string;
+    pathReplanCooldown: number;
+    precalculatedPath: Vector3[];
+    lockedFlowGoal: Vector3;
+    lockedFlowPhase: string;
 
     phase: string;
     stepIndex: number;
@@ -907,6 +1206,7 @@ export interface CobotState {
     grabbedItem: SimItem | null;
     waitTimer: number;
     autoDropTarget: Vector3 | null;  // set during auto-stack
+    activeDropTarget: Vector3 | null;
     isAutoProgram?: boolean;
     toolNormalBlend?: number;
 
@@ -1200,9 +1500,23 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         safetyStopped: false,
         recoveryTimer: 0,
         overdriveScore: 0,
+        avoidanceSide: 0,
+        avoidanceBias: Vector3.Zero(),
+        retreatTarget: null,
+        retreatTimer: 0,
+        recoveryAttempts: 0,
+        plannedPath: [idleTarget.clone()],
+        plannedPathCursor: 0,
+        plannedPathGoal: idleTarget.clone(),
+        plannedPathPhase: 'idle',
+        pathReplanCooldown: 0,
+        precalculatedPath: [idleTarget.clone()],
+        lockedFlowGoal: idleTarget.clone(),
+        lockedFlowPhase: 'idle',
         phase: 'idle', stepIndex: 0,
         targetedItem: null, grabbedItem: null, waitTimer: 0,
         autoDropTarget: null,
+        activeDropTarget: null,
         position: item.position, baseRotY,
         program: item.config?.program || [],
         speed: item.config?.speed || 1.0,
@@ -1365,6 +1679,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     const L3 = 0.715; // Exact distance from wrist to gripperTip (0.45 + 0.05 + 0.215)
     state.simTime += delta;
     state.overdriveScore = Math.max(0, state.overdriveScore - OVERDRIVE_DECAY_PER_SEC * delta);
+    state.pathReplanCooldown = Math.max(0, state.pathReplanCooldown - delta);
+    state.avoidanceBias.scaleInPlace(Math.max(0, 1 - delta * AVOIDANCE_BIAS_DECAY));
+    if (state.avoidanceBias.lengthSquared() < 0.0001) {
+        state.avoidanceBias.setAll(0);
+    }
 
     state.mountBase.computeWorldMatrix(true);
     const mountPos = state.mountBase.getAbsolutePosition().clone();
@@ -1377,6 +1696,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             delete simState.cobotWrists[state.selfItem.id];
             delete simState.cobotArmSamples[state.selfItem.id];
         }
+        itemMotionTracker.clear();
         state.desiredTarget.copyFrom(state.idleTarget);
         state.ikVelocity.setAll(0);
         state.wristRollTarget = 0;
@@ -1391,12 +1711,29 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.safetyStopped = false;
         state.recoveryTimer = 0;
         state.overdriveScore = 0;
+        state.retreatTarget = null;
+        state.retreatTimer = 0;
+        state.recoveryAttempts = 0;
+        state.activeDropTarget = null;
+        state.plannedPath = [state.idleTarget.clone()];
+        state.plannedPathCursor = 0;
+        state.plannedPathGoal.copyFrom(state.idleTarget);
+        state.plannedPathPhase = 'idle';
+        state.precalculatedPath = [state.idleTarget.clone()];
+        state.lockedFlowGoal.copyFrom(state.idleTarget);
+        state.lockedFlowPhase = 'idle';
         return false;
     } else if (state.safetyStopped || isStopped) {
         state.ikVelocity.setAll(0);
         if (state.targetedItem?.state === 'targeted') state.targetedItem.state = 'free';
         state.targetedItem = null;
         state.desiredTarget.copyFrom(state.ikTarget);
+        state.precalculatedPath = [state.ikTarget.clone()];
+        state.activeDropTarget = null;
+        state.retreatTarget = null;
+        state.retreatTimer = 0;
+        state.lockedFlowGoal.copyFrom(state.ikTarget);
+        state.lockedFlowPhase = state.phase;
         
         // Recover perfectly when the user moves the obstacle out of the way
         if (state.safetyStopped && !isStopped && !armHitsObstacle(state, state.obstacles)) {
@@ -1405,8 +1742,17 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             state.phase = 'idle';
             state.desiredTarget.copyFrom(state.idleTarget);
             state.overdriveScore = 0;
+            state.plannedPath = [state.ikTarget.clone(), state.idleTarget.clone()];
+            state.plannedPathCursor = 1;
+            state.plannedPathGoal.copyFrom(state.idleTarget);
+            state.plannedPathPhase = 'idle';
+            state.precalculatedPath = state.plannedPath.map(p => p.clone());
+            state.activeDropTarget = null;
+            state.recoveryAttempts = 0;
+            state.lockedFlowGoal.copyFrom(state.idleTarget);
+            state.lockedFlowPhase = 'idle';
         }
-        return !!(state.safetyStopped || isStopped);
+        return !!state.safetyStopped;
     } else if (!state.autoOrganize && state.isAutoProgram) {
         // Idle organize was turned off by user: abort generated work immediately.
         if (state.targetedItem?.state === 'targeted') state.targetedItem.state = 'free';
@@ -1414,12 +1760,23 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.targetedItem = null;
         state.grabbedItem = null;
         state.autoDropTarget = null;
+        state.activeDropTarget = null;
+        state.retreatTarget = null;
+        state.retreatTimer = 0;
+        state.recoveryAttempts = 0;
         state.program = [];
         state.isAutoProgram = false;
         state.stepIndex = 0;
         state.phase = 'idle';
         state.desiredTarget.copyFrom(state.idleTarget);
         state.ikVelocity.setAll(0);
+        state.plannedPath = [state.ikTarget.clone(), state.idleTarget.clone()];
+        state.plannedPathCursor = 1;
+        state.plannedPathGoal.copyFrom(state.idleTarget);
+        state.plannedPathPhase = 'idle';
+        state.precalculatedPath = state.plannedPath.map(p => p.clone());
+        state.lockedFlowGoal.copyFrom(state.idleTarget);
+        state.lockedFlowPhase = 'idle';
         return false;
     } else if (state.program.length > 0) {
         const distToTarget = Vector3.Distance(state.ikTarget, state.desiredTarget);
@@ -1530,9 +1887,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                         }
                     } else if (step.action === 'drop') {
                         if (!state.grabbedItem) {
+                            state.activeDropTarget = null;
                             state.stepIndex++;
                             break;
                         }
+                        state.activeDropTarget = computeDropTarget(state);
                         state.phase = 'hover_drop';
                         state.waitTimer = 0;
                     }
@@ -1555,6 +1914,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 const isUnreachable = state.targetedItem && Math.sqrt(rdx*rdx + rdz*rdz + rdy*rdy) > (L1 + L2 - 0.02);
                 if (state.targetedItem?.state === 'targeted') {
                     state.targetTimer += delta;
+                    const pickTimeout = currentPickTimeout(state);
+                    const targetOnDrive = !!driveTileAt(state.targetedItem.pos.x, state.targetedItem.pos.z, state.obstacles);
                     const target = pickupAimPoint(state, state.targetedItem);
                     const supportTop = supportTopAt(target.x, target.z, state.obstacles);
                     const hoverY = Math.max(target.y + PICK_HOVER_CLEARANCE, supportTop + PICK_HOVER_CLEARANCE);
@@ -1568,7 +1929,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     if (planar < PICK_ALIGN_RADIUS && Math.abs(tip.y - hoverY) < 0.12) {
                         state.phase = 'pick_descend';
                         state.waitTimer = 0;
-                    } else if (state.targetTimer > PICK_TARGET_TIMEOUT || (state.blockedTimer > 0.12 && planar > 0.24) || isUnreachable) {
+                    } else if (state.targetTimer > pickTimeout || (state.blockedTimer > 0.12 && planar > (targetOnDrive ? 0.36 : 0.24)) || isUnreachable) {
                         state.skippedTargetIds[state.targetedItem.id] = state.simTime + PICK_SKIP_COOLDOWN;
                         state.targetedItem.state = 'free';
                         state.targetedItem = null;
@@ -1588,6 +1949,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 const isUnreachable = state.targetedItem && Math.sqrt(rdx*rdx + rdz*rdz + rdy*rdy) > (L1 + L2 - 0.02);
                 state.waitTimer += delta;
                 state.targetTimer += delta;
+                const pickTimeout = currentPickTimeout(state);
                 if (state.targetedItem?.state === 'targeted') {
                     const target = pickupAimPoint(state, state.targetedItem, PICK_LEAD_TIME * 0.6);
                     const supportTop = supportTopAt(target.x, target.z, state.obstacles);
@@ -1599,7 +1961,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 if (state.waitTimer > 0.05 && contact.touchingPart && state.targetedItem?.state === 'targeted') {
                     state.phase = 'pick_attach';
                     state.waitTimer = 0;
-                } else if (state.waitTimer > 0.9 || state.targetTimer > PICK_TARGET_TIMEOUT || (state.blockedTimer > 0.12 && contact.horizontalDist > Math.max(0.2, contact.targetRadius * 0.7)) || isUnreachable) {
+                } else if (state.waitTimer > 0.9 || state.targetTimer > pickTimeout || (state.blockedTimer > 0.12 && contact.horizontalDist > Math.max(0.24, contact.targetRadius * 0.76)) || isUnreachable) {
                     if (state.targetedItem) state.targetedItem.state = 'free';
                     if (state.targetedItem) state.skippedTargetIds[state.targetedItem.id] = state.simTime + PICK_SKIP_COOLDOWN;
                     state.targetedItem = null; state.phase = 'idle';
@@ -1617,6 +1979,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 const isUnreachable = state.targetedItem && Math.sqrt(rdx*rdx + rdz*rdz + rdy*rdy) > (L1 + L2 - 0.02);
                 state.waitTimer += delta;
                 state.targetTimer += delta;
+                const pickTimeout = currentPickTimeout(state);
                 state.gripperOpen = false;
                 if (state.targetedItem?.state === 'targeted') {
                     const target = pickupAimPoint(state, state.targetedItem, PICK_LEAD_TIME * 0.45);
@@ -1643,7 +2006,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                         state.autoDropTarget = getAutoSlot(partHint(state.grabbedItem));
                     }
                     state.phase = 'lift';
-                } else if (state.waitTimer > 0.3 || state.targetTimer > PICK_TARGET_TIMEOUT || (state.waitTimer > 0.12 && attachContact.horizontalDist > Math.max(PICK_GRAB_RADIUS, attachContact.targetRadius * 0.8)) || isUnreachable) {
+                } else if (state.waitTimer > 0.3 || state.targetTimer > pickTimeout || (state.waitTimer > 0.12 && attachContact.horizontalDist > Math.max(PICK_GRAB_RADIUS + 0.02, attachContact.targetRadius * 0.86)) || isUnreachable) {
                     if (state.targetedItem) state.targetedItem.state = 'free';
                     if (state.targetedItem) state.skippedTargetIds[state.targetedItem.id] = state.simTime + PICK_SKIP_COOLDOWN;
                     state.targetedItem = null; state.phase = 'idle';
@@ -1681,6 +2044,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             case 'transit_drop': {
                 const tgt = currentDropTarget(state);
                 if (!tgt) {
+                    state.activeDropTarget = null;
                     state.phase = state.grabbedItem ? 'idle' : 'next';
                     break;
                 }
@@ -1695,6 +2059,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             case 'hover_drop': {
                 const tgt = currentDropTarget(state);
                 if (!tgt) {
+                    state.activeDropTarget = null;
                     state.phase = state.grabbedItem ? 'idle' : 'next';
                     break;
                 }
@@ -1710,29 +2075,65 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             case 'descend_drop': {
                 const tgt = currentDropTarget(state);
                 if (!tgt) {
+                    state.activeDropTarget = null;
                     state.phase = state.grabbedItem ? 'idle' : 'next';
                     break;
                 }
                 const dropTop = stackCenterYAt(tgt.x, tgt.z, dropBaseCenterY(state, tgt, state.grabbedItem), state.grabbedItem, state.grabbedItem, STACK_R);
-                const safeDropY = Math.max(dropTop + DROP_CLEARANCE, wallTopAt(tgt.x, tgt.z, dropObstacles(state)) + 0.05);
+                const safeDropY = Math.max(dropTop + 0.08, wallTopAt(tgt.x, tgt.z, dropObstacles(state)) + 0.03);
                 state.desiredTarget.set(tgt.x, safeDropY, tgt.z);
                 if (reached) { state.phase = 'release'; state.waitTimer = 0; }
                 break;
             }
             case 'release':
-                state.gripperOpen = true;
                 state.waitTimer += delta;
-                if (state.waitTimer > 0.12) {
+                const placement = dropPlacementState(state);
+                if (!placement) {
+                    state.activeDropTarget = null;
+                    state.phase = state.grabbedItem ? 'idle' : 'next';
+                    break;
+                }
+                const releaseApproachY = Math.max(
+                    placement.landingY + 0.018,
+                    wallTopAt(placement.target.x, placement.target.z, dropObstacles(state)) + 0.018
+                );
+                state.desiredTarget.set(placement.target.x, releaseApproachY, placement.target.z);
+                const part = state.grabbedItem;
+                const relaxedPlaceReady = !!part
+                    && placement.planar <= Math.max(placement.partR * 0.9, 0.22)
+                    && part.pos.y <= placement.landingY + 0.055;
+                if ((placement.touching || relaxedPlaceReady) && state.waitTimer > 0.07) {
+                    state.gripperOpen = true;
                     if (state.grabbedItem) {
                         if (state.isAutoProgram) state.lastDroppedItemId = state.grabbedItem.id;
+                        state.grabbedItem.pos.set(placement.target.x, placement.landingY, placement.target.z);
                         state.grabbedItem.state = 'free';
                         state.grabbedItem = null;
                     }
                     state.autoDropTarget = null;
-                state.phase = 'next';
+                    state.activeDropTarget = null;
+                    state.phase = 'next';
+                } else {
+                    state.gripperOpen = false;
+                    if (state.waitTimer > 1.2) {
+                        if (part && placement.planar <= Math.max(placement.partR * 1.2, 0.3) && part.pos.y <= placement.landingY + 0.11) {
+                            if (state.isAutoProgram) state.lastDroppedItemId = part.id;
+                            part.pos.set(placement.target.x, placement.landingY, placement.target.z);
+                            part.state = 'free';
+                            state.grabbedItem = null;
+                            state.autoDropTarget = null;
+                            state.activeDropTarget = null;
+                            state.phase = 'next';
+                        } else {
+                            state.waitTimer = 0;
+                            state.activeDropTarget = computeDropTarget(state);
+                            state.phase = 'hover_drop';
+                        }
+                    }
                 }
                 break;
             case 'next':
+                state.activeDropTarget = null;
                 state.stepIndex++;
                 if (state.isAutoProgram && state.stepIndex >= state.program.length) {
                     state.program = [];
@@ -1775,6 +2176,19 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         }
     }
 
+    if (state.retreatTimer > 0 && state.retreatTarget) {
+        state.retreatTimer = Math.max(0, state.retreatTimer - delta);
+        state.desiredTarget = Vector3.Lerp(state.desiredTarget, state.retreatTarget, 0.9);
+        if (state.targetedItem) state.targetTimer = Math.max(0, state.targetTimer - delta * 0.4);
+        if (state.retreatTimer <= 0) {
+            state.retreatTarget = null;
+            state.pathReplanCooldown = Math.max(state.pathReplanCooldown, 0.28);
+        }
+    } else if (state.recoveryAttempts > 0 && state.blockedTimer < 0.01) {
+        state.recoveryAttempts = Math.max(0, state.recoveryAttempts - delta * 0.25);
+    }
+
+    const precisePhase = isFineAlignPhase(state.phase);
     state.desiredTarget.y = Math.max(state.desiredTarget.y, state.position[1] + 0.1);
     const maxReach = L1 + L2 + L3 - 0.08;
     const desiredDx = state.desiredTarget.x - mountPos.x;
@@ -1784,15 +2198,28 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         const maxVertical = Math.sqrt(Math.max(0.01, maxReach * maxReach - desiredPlanar * desiredPlanar));
         state.desiredTarget.y = Math.min(state.desiredTarget.y, mountPos.y + maxVertical - 0.04);
     }
-
+    const rawGoal = state.desiredTarget.clone();
+    const flowGoal = resolveFlowGoal(state, rawGoal);
+    const pathTarget = nextPlannedTarget(state, mountPos, flowGoal, precisePhase);
+    state.precalculatedPath = buildPrecalculatedToolpathPreview(state, mountPos, flowGoal, precisePhase);
+    let commandedTarget = pathTarget.clone();
+    if (precisePhase) {
+        let blendRadius = 0.42;
+        let blendStrength = 0.8;
+        if (state.phase === 'pick_hover') { blendRadius = 1.3; blendStrength = 1.0; }
+        else if (state.phase === 'pick_descend') { blendRadius = 0.95; blendStrength = 1.0; }
+        else if (state.phase === 'pick_attach') { blendRadius = 0.62; blendStrength = 1.0; }
+        else if (state.phase === 'hover_drop') { blendRadius = 0.55; blendStrength = 0.9; }
+        else if (state.phase === 'descend_drop') { blendRadius = 0.45; blendStrength = 0.9; }
+        const remaining = Vector3.Distance(pathTarget, flowGoal);
+        if (remaining < blendRadius) {
+            const microBlend = clamp(1 - (remaining / blendRadius), 0, 1);
+            commandedTarget = Vector3.Lerp(pathTarget, rawGoal, microBlend * blendStrength);
+        }
+    }
+    state.desiredTarget.copyFrom(commandedTarget);
     const toTarget = state.desiredTarget.subtract(state.ikTarget);
     const distanceToTarget = toTarget.length();
-    const precisePhase = state.phase === 'pick_hover'
-        || state.phase === 'pick_descend'
-        || state.phase === 'pick_attach'
-        || state.phase === 'hover_drop'
-        || state.phase === 'descend_drop'
-        || state.phase === 'release';
 
     state.wristRoll.computeWorldMatrix(true);
     const wristPos = state.wristRoll.getAbsolutePosition();
@@ -1933,6 +2360,9 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         repulsion.normalize();
         const strength = (0.35 - minDist) * 1.5 * avoidanceGain;
         state.desiredTarget.addInPlace(repulsion.scale(strength));
+        state.avoidanceBias.addInPlace(repulsion.scale(strength * 1.25));
+        state.avoidanceBias.x = clamp(state.avoidanceBias.x, -AVOIDANCE_MAX_BIAS, AVOIDANCE_MAX_BIAS);
+        state.avoidanceBias.z = clamp(state.avoidanceBias.z, -AVOIDANCE_MAX_BIAS, AVOIDANCE_MAX_BIAS);
         // Strict clamp to prevent pushing through floor
         state.desiredTarget.y = Math.max(state.desiredTarget.y, state.position[1] + 0.1);
     }
@@ -1967,6 +2397,36 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
             .add(sensorRight.scale(rightComp * clamp(rightScale, 0, 1)));
         desiredVelocity.x = safePlanar.x;
         desiredVelocity.z = safePlanar.z;
+    }
+    {
+        const maxHazard = Math.max(hazardForward, hazardRight, hazardBackward, hazardLeft);
+        const nearRisk = minDist < 0.5 ? clamp((0.5 - Math.max(0, minDist)) / 0.5, 0, 1) : 0;
+        const lateralPreference = clamp(hazardLeft - hazardRight, -1, 1);
+        if (Math.abs(lateralPreference) > 0.02) {
+            const side = lateralPreference > 0 ? 1 : -1;
+            state.avoidanceSide = side as -1 | 1;
+            const strafe = sensorRight.scale(side * cruiseSpeed * (0.18 + 0.82 * Math.max(maxHazard, nearRisk)));
+            desiredVelocity.addInPlace(strafe);
+        } else if (state.avoidanceSide !== 0 && maxHazard > 0.08) {
+            desiredVelocity.addInPlace(sensorRight.scale(state.avoidanceSide * cruiseSpeed * 0.2));
+        }
+
+        if (hazardForward > 0.55 && minDist < 0.42) {
+            desiredVelocity.addInPlace(sensorForward.scale(-cruiseSpeed * hazardForward * 0.7));
+        }
+
+        if (state.avoidanceBias.lengthSquared() > 0.0001) {
+            const biasGain = (precisePhase ? 0.55 : 1.05) * state.speed;
+            desiredVelocity.addInPlace(state.avoidanceBias.scale(biasGain));
+        }
+
+        const slowdown = clamp(
+            1 - Math.max(maxHazard * 0.8, nearRisk * 0.92),
+            precisePhase ? 0.2 : 0.12,
+            1
+        );
+        desiredVelocity.scaleInPlace(slowdown);
+        if (maxHazard < 0.08 && nearRisk < 0.08) state.avoidanceSide = 0;
     }
 
     const velocityBlend = Math.min(1, accel * delta);
@@ -2054,16 +2514,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     if (isRunning) {
         const hit = armHitsObstacle(state, state.obstacles);
         if (hit) {
-            if (isSoftAvoidCollision(state, hit)) {
-                applySoftAvoidance(state, hit);
-            } else {
-                applySoftAvoidance(state, hit);
-                const penalty = hit.type === 'cobot' ? OVERDRIVE_HIT_PENALTY + 0.3 : OVERDRIVE_HIT_PENALTY;
-                if (addOverdrivePenalty(state, penalty)) {
-                    console.warn(`Cobot overdrive stop: repeated arm collisions near ${hit.type} at ${hit.position.join(',')}`);
-                    enterCollisionRecovery(state);
-                    return true;
-                }
+            applySoftAvoidance(state, hit);
+            const penalty = hit.type === 'cobot' ? OVERDRIVE_HIT_PENALTY + 0.3 : OVERDRIVE_HIT_PENALTY;
+            state.overdriveScore = Math.max(0, state.overdriveScore - penalty * 0.5);
+            if (!isSoftAvoidCollision(state, hit)) {
+                state.recoveryTimer = Math.max(state.recoveryTimer, 0.12);
             }
         }
         state.lastSafeIkTarget.copyFrom(state.ikTarget);
@@ -2081,7 +2536,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         const item = state.grabbedItem;
         const activeDropTarget = currentDropTarget(state);
 
-        if (activeDropTarget) {
+        if (activeDropTarget && (state.phase === 'descend_drop' || state.phase === 'release')) {
             const stackBaseY = dropBaseCenterY(state, activeDropTarget, item);
             const landingY = stackCenterYAt(activeDropTarget.x, activeDropTarget.z, stackBaseY, item, item, 0.3);
             const dx = item.pos.x - activeDropTarget.x;
@@ -2091,6 +2546,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 item.state = 'free';
                 state.grabbedItem = null;
                 state.autoDropTarget = null;
+                state.activeDropTarget = null;
                 state.phase = 'next';
                 state.waitTimer = 0;
                 return false;
@@ -2133,19 +2589,23 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 blocked = true;
                 if (wantsToMove && probeMotion < 0.003) {
                     state.blockedTimer += delta;
-                    if (state.blockedTimer > 0.45) {
-                        if (obstacle.type === 'belt' || ((obstacle.type === 'sender') && (isAllowedPickContact || isAllowedDropContact))) {
-                            applySoftAvoidance(state, obstacle);
-                            state.blockedTimer = 0;
-                        } else {
-                            applySoftAvoidance(state, obstacle);
-                            if (addOverdrivePenalty(state, OVERDRIVE_STALL_PENALTY)) {
-                                console.warn(`Cobot overdrive stop: repeated stall against ${obstacle.type} at ${obstacle.position.join(',')}`);
-                                enterCollisionRecovery(state);
-                                state.lastProbePos.copyFrom(probe);
-                                return true;
-                            }
-                            state.blockedTimer = 0;
+                    if (state.blockedTimer > 0.24 && state.retreatTimer <= 0) {
+                        applySoftAvoidance(state, obstacle);
+                    }
+                    if (state.blockedTimer > STUCK_STALL_TIMEOUT) {
+                        startRecoveryRetreat(state, obstacle);
+                        state.blockedTimer = 0;
+                        if (state.recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+                            state.safetyStopped = true;
+                            state.retreatTarget = null;
+                            state.retreatTimer = 0;
+                            state.desiredTarget.copyFrom(state.ikTarget);
+                            if (state.targetedItem?.state === 'targeted') state.targetedItem.state = 'free';
+                            state.targetedItem = null;
+                            state.activeDropTarget = null;
+                            state.phase = 'idle';
+                            state.waitTimer = 0;
+                            return true;
                         }
                     }
                 }

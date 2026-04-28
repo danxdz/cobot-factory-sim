@@ -267,6 +267,10 @@ export const BabylonScene: React.FC = () => {
         function cobotRuntimeState(cState: CobotState, isRunning: boolean): MachineRuntimeState {
             if (!isRunning) return { health: 'idle', label: 'Idle', detail: 'Simulation stopped' };
             if (cState.safetyStopped) return { health: 'warning', label: 'Safety Stop', detail: 'Paused due to obstruction or rule violation' };
+            if (cState.reducedSpeedActive) {
+                const speedPct = Math.round((cState.safetySpeedFactor || 1) * 100);
+                return { health: 'warning', label: 'Reduced Speed', detail: `Safety zone active (${speedPct}% speed)` };
+            }
             if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Obstructed', detail: 'Obstacle repulsion active while moving' };
             if (cState.isFull) return { health: 'stopped', label: 'Full', detail: 'Container stack is at capacity' };
             if (cState.phase === 'release') return { health: 'running', label: 'Dropping', detail: 'Releasing part onto target' };
@@ -399,7 +403,19 @@ export const BabylonScene: React.FC = () => {
                         cState.blockedTimer = 0;
                         cState.targetTimer = 0;
                         cState.recoveryTimer = 2.0;
+                        cState.safetySpeedFactor = 1;
+                        cState.reducedSpeedActive = false;
                         cState.desiredTarget.copyFrom(cState.idleTarget);
+                    }
+                    if (itm.config?.cobotCollisionEnabled === false) {
+                        cState.safetyStopped = false;
+                        cState.blockedTimer = 0;
+                        cState.partContactTimer = 0;
+                        cState.safetySpeedFactor = 1;
+                        cState.reducedSpeedActive = false;
+                        if (itm.config?.collisionStopped) {
+                            st.updatePlacedItem(id, { config: { ...itm.config, collisionStopped: false } });
+                        }
                     }
                     if (!itm.config?.collisionStopped) cState.safetyStopped = false;
                     cState.program = itm.config?.program || [];
@@ -543,10 +559,22 @@ export const BabylonScene: React.FC = () => {
                     teachSteps.push({ action: step.action, pos: step.pos as [number, number, number], key: String(idx) });
                 });
                 if (!program.some(step => step.action === 'drop')) {
+                    const centerX = selected.position[0];
+                    const centerZ = selected.position[2];
+                    const platformTopY = selected.position[1] + COBOT_PLATFORM_TOP_Y;
+                    let stackTopY = platformTopY;
+                    for (const simItem of simState.items) {
+                        if (simItem.state === 'dead') continue;
+                        const dx = Math.abs(simItem.pos.x - centerX);
+                        const dz = Math.abs(simItem.pos.z - centerZ);
+                        if (dx > COBOT_PLATFORM_W / 2 || dz > COBOT_PLATFORM_D / 2) continue;
+                        stackTopY = Math.max(stackTopY, simItem.pos.y + partHalfHeight(simItem));
+                    }
+                    const autoDropY = Math.max(platformTopY + 0.18, stackTopY + 0.26);
                     const autoDropPos: [number, number, number] = [
-                        selected.position[0],
-                        selected.position[1] + COBOT_PLATFORM_CENTER_Y,
-                        selected.position[2],
+                        centerX,
+                        autoDropY,
+                        centerZ,
                     ];
                     teachSteps.push({ action: 'drop', pos: autoDropPos, key: 'auto_drop_center', synthetic: true });
                 }

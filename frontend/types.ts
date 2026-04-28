@@ -59,6 +59,7 @@ export interface ItemConfig {
     showTeachZones?: boolean; // For Cobots: show pick/drop teaching zones while selected
     showTeachPoints?: boolean; // For Cobots: show taught pick/drop point balls while selected
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
+    cobotCollisionEnabled?: boolean; // For Cobots: enable/disable collision safety system
     collisionStopped?: boolean; // For Cobots: local safety pause after collision
     isStopped?: boolean; // For Cobots: manual pause toggle
     triggerUnlock?: number; // For Cobots: force runtime unlock pulse

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
 import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
@@ -227,6 +227,25 @@ export const UI: React.FC = () => {
     const [cameraPreviewMode, setCameraPreviewMode] = useState<'graph' | 'video'>('video');
     const [showMasterPanel, setShowMasterPanel] = useState(true);
     const [masterCameraId, setMasterCameraId] = useState<string | null>(null);
+    const [flatPanels, setFlatPanels] = useState(true);
+    const [masterPanelPos, setMasterPanelPos] = useState({ x: 0, y: 0 });
+    const [selectionPanelPos, setSelectionPanelPos] = useState({ x: 0, y: 0 });
+    const [canDragPanels, setCanDragPanels] = useState(() => window.innerWidth >= 1024);
+    const dragRef = useRef<{
+        key: 'master' | 'selection' | null;
+        pointerId: number | null;
+        startX: number;
+        startY: number;
+        originX: number;
+        originY: number;
+    }>({
+        key: null,
+        pointerId: null,
+        startX: 0,
+        startY: 0,
+        originX: 0,
+        originY: 0,
+    });
     const [, setCameraFrameTick] = useState(0);
     const { 
         credits, 
@@ -289,6 +308,9 @@ export const UI: React.FC = () => {
             .slice()
             .sort((a, b) => b.confidence - a.confidence)
         : [];
+    const scoreValue = Number.isFinite(score) ? score : 0;
+    const creditsValue = Number.isFinite(credits) ? credits : 0;
+    const simSpeedValue = Number.isFinite(simSpeedMult) ? simSpeedMult : 1;
 
     const liveParts = simState.items.filter(item => item.state !== 'dead');
     let transitParts = 0;
@@ -300,7 +322,7 @@ export const UI: React.FC = () => {
         else if (supportType === 'table' || supportType === 'pile' || supportType === 'cobot' || supportType === 'receiver' || supportType === 'indexed_receiver') stockedParts += 1;
         else looseParts += 1;
     });
-    const producedEstimate = liveParts.length + score;
+    const producedEstimate = liveParts.length + scoreValue;
 
     let cobotRunning = 0;
     let cobotWarning = 0;
@@ -351,6 +373,56 @@ export const UI: React.FC = () => {
             setMasterCameraId(cameras[0].id);
         }
     }, [cameras, masterCameraId]);
+    useEffect(() => {
+        const onResize = () => {
+            const desktop = window.innerWidth >= 1024;
+            setCanDragPanels(desktop);
+            if (!desktop) {
+                setMasterPanelPos({ x: 0, y: 0 });
+                setSelectionPanelPos({ x: 0, y: 0 });
+            }
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, []);
+
+    const panelFrameClass = flatPanels
+        ? 'bg-gray-900/95 border border-gray-700 shadow-none backdrop-blur-0'
+        : 'bg-gray-900/92 border border-gray-700 shadow-2xl backdrop-blur-md';
+
+    const startPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+        if (!canDragPanels || e.button !== 0) return;
+        const targetEl = e.target as HTMLElement;
+        const dragHandle = targetEl.closest('[data-drag-handle="true"]');
+        if (!dragHandle && targetEl.closest('button, input, select, textarea, a, [data-no-drag="true"]')) return;
+        const pos = key === 'master' ? masterPanelPos : selectionPanelPos;
+        dragRef.current = {
+            key,
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            originX: pos.x,
+            originY: pos.y,
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+    };
+
+    const movePanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+        if (dragRef.current.key !== key || dragRef.current.pointerId !== e.pointerId) return;
+        const dx = e.clientX - dragRef.current.startX;
+        const dy = e.clientY - dragRef.current.startY;
+        const nextX = Math.max(-520, Math.min(520, dragRef.current.originX + dx));
+        const nextY = Math.max(-340, Math.min(340, dragRef.current.originY + dy));
+        if (key === 'master') setMasterPanelPos({ x: nextX, y: nextY });
+        else setSelectionPanelPos({ x: nextX, y: nextY });
+    };
+
+    const endPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+        if (dragRef.current.key !== key || dragRef.current.pointerId !== e.pointerId) return;
+        dragRef.current.key = null;
+        dragRef.current.pointerId = null;
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    };
     const statusTone = selectedMachineState?.health === 'stopped'
         ? {
             panel: 'border-red-500/60',
@@ -386,7 +458,7 @@ export const UI: React.FC = () => {
         if (now - playClicks.time < 500) {
             const newCount = playClicks.count + 1;
             if (newCount >= 4) { // 5th rapid click total (0,1,2,3,4 â†’ trigger)
-                setCredits(credits + 10000);
+                setCredits(creditsValue + 10000);
                 setPlayClicks({ count: 0, time: 0 });
             } else {
                 setPlayClicks({ count: newCount, time: now });
@@ -478,7 +550,7 @@ export const UI: React.FC = () => {
     const handleSellSelected = () => {
         if (selectedItem) {
             removePlacedItem(selectedItem.id);
-            setCredits(credits + ITEM_COSTS[selectedItem.type]); 
+            setCredits(creditsValue + ITEM_COSTS[selectedItem.type]); 
         }
     };
 
@@ -690,6 +762,24 @@ export const UI: React.FC = () => {
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, collisionStopped: false, triggerUnlock: Date.now() } });
     };
 
+    const exportSelectedCobotLog = () => {
+        if (!selectedItem || selectedItem.type !== 'cobot') return;
+        const log = simState.cobotLogs[selectedItem.id] || [];
+        const payload = {
+            cobotId: selectedItem.id,
+            cobotName: selectedItem.name || selectedItem.id,
+            exportedAt: new Date().toISOString(),
+            entries: log,
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `cobot_log_${selectedItem.id}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     const patchMachineSize = (axis: 0 | 1, value: number) => {
         if (!selectedItem) return;
         const current = selectedItem.config?.machineSize || [2, 2];
@@ -764,6 +854,13 @@ export const UI: React.FC = () => {
                             className="rounded border-gray-600 bg-gray-800"
                         />
                     </label>
+                    <button
+                        onClick={() => setFlatPanels(v => !v)}
+                        className={`rounded-xl px-3 py-1.5 sm:px-4 sm:py-2 border text-[10px] font-bold transition-colors ${flatPanels ? 'bg-cyan-900/30 border-cyan-600/40 text-cyan-200' : 'bg-gray-900/90 border-gray-700 text-gray-300 hover:bg-gray-800'}`}
+                        title="Toggle flat panels"
+                    >
+                        {flatPanels ? 'FLAT PANELS' : 'DEPTH PANELS'}
+                    </button>
                     <div className="flex gap-1.5 sm:gap-2">
                         <button onClick={() => setShowHelpModal(true)} className="bg-gray-900/90 backdrop-blur-md rounded-xl w-10 sm:w-12 shadow-xl border border-gray-700 flex items-center justify-center hover:bg-gray-800 transition-colors text-blue-400" title="Help / Instructions">
                             <HelpCircle size={20} className="sm:w-6 sm:h-6" />
@@ -774,7 +871,7 @@ export const UI: React.FC = () => {
                         </div>
                         <div>
                             <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
-                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{score}</div>
+                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{scoreValue}</div>
                         </div>
                     </div>
                     <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
@@ -783,16 +880,32 @@ export const UI: React.FC = () => {
                         </div>
                         <div>
                             <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Credits</div>
-                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{credits}</div>
+                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{creditsValue}</div>
                         </div>
                     </div>
                 </div>
-                    <div className="w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 bg-gray-900/92 backdrop-blur-md shadow-2xl overflow-hidden">
+                    <div
+                        className={`w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 overflow-hidden ${panelFrameClass}`}
+                        style={{ transform: `translate(${masterPanelPos.x}px, ${masterPanelPos.y}px)` }}
+                    >
                         <button
                             onClick={() => setShowMasterPanel(v => !v)}
+                            onPointerDown={(e) => startPanelDrag('master', e)}
+                            onPointerMove={(e) => movePanelDrag('master', e)}
+                            onPointerUp={(e) => endPanelDrag('master', e)}
+                            onPointerCancel={(e) => endPanelDrag('master', e)}
                             className="w-full flex items-center justify-between px-3 py-2 bg-cyan-900/25 hover:bg-cyan-800/30 transition-colors"
                         >
                             <div className="flex items-center gap-2 text-cyan-100">
+                                {canDragPanels && (
+                                    <span
+                                        data-drag-handle="true"
+                                        className="text-cyan-300/90 font-mono text-xs px-1 cursor-grab active:cursor-grabbing select-none"
+                                        title="Drag panel"
+                                    >
+                                        :::
+                                    </span>
+                                )}
                                 <Cpu size={15} />
                                 <span className="text-[11px] font-black tracking-wider">MASTER CONTROL</span>
                             </div>
@@ -809,7 +922,7 @@ export const UI: React.FC = () => {
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">SIM SPEED</div>
-                                        <div className="font-black text-cyan-200">{simSpeedMult.toFixed(2)}x</div>
+                                        <div className="font-black text-cyan-200">{simSpeedValue.toFixed(2)}x</div>
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">PARTS SENT (EST)</div>
@@ -817,7 +930,7 @@ export const UI: React.FC = () => {
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">SORTED / DROPPED</div>
-                                        <div className="font-black text-emerald-300">{score}</div>
+                                        <div className="font-black text-emerald-300">{scoreValue}</div>
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">STOCKED</div>
@@ -937,7 +1050,7 @@ export const UI: React.FC = () => {
                                                 {masterCameraDetections.slice(0, 6).map(det => (
                                                     <div key={`master_row_${det.itemId}`} className="px-2 py-1 text-[10px] text-gray-300 border-b border-gray-900/80 last:border-b-0 flex justify-between gap-2">
                                                         <span className="truncate">{det.templateName || det.templateId || det.itemId}</span>
-                                                        <span className="text-gray-400">{Math.round(det.confidence * 100)}%</span>
+                                                        <span className="text-gray-400">{Math.round((Number.isFinite(det.confidence) ? det.confidence : 0) * 100)}%</span>
                                                     </div>
                                                 ))}
                                                 {masterCameraDetections.length === 0 && (
@@ -962,7 +1075,7 @@ export const UI: React.FC = () => {
             <div className="flex flex-col items-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-full">
                 
                 {draftPlacement ? (
-                    <div className="bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-gray-700 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto">
+                    <div className={`${panelFrameClass} rounded-xl p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}>
                         <div className="text-sm font-black text-yellow-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
                             <span className="flex items-center gap-2"><Settings2 size={16} /> PLACE {draftPlacement.type === 'sender' ? 'PART SPAWNER' : draftPlacement.type.toUpperCase()}</span>
                             <span className="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-xs border border-gray-600">{ITEM_COSTS[draftPlacement.type]} CR</span>
@@ -980,7 +1093,7 @@ export const UI: React.FC = () => {
                         </div>
                     </div>
                 ) : moveModeItemId && selectedItem && moveModeItemId === selectedItem.id ? (
-                    <div className="bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border border-blue-500 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto">
+                    <div className={`${panelFrameClass} rounded-xl border-blue-500 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}>
                         <div className="text-sm font-black text-blue-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
                             <span className="flex items-center gap-2"><Move size={16} /> MOVING {selectedItem.type.toUpperCase()}</span>
                         </div>
@@ -988,9 +1101,28 @@ export const UI: React.FC = () => {
                     </div>
                 ) : selectedItem ? (
                     /* SELECTION PANEL */
-                    <div className={`bg-gray-900/95 backdrop-blur-md rounded-xl shadow-2xl border p-2 flex flex-col gap-1.5 w-[min(540px,calc(100vw-16px))] max-h-[80vh] overflow-y-auto animate-fade-in ${statusTone.panel}`}>
-                        <div className="flex justify-between items-center border-b border-gray-700 pb-1.5">
+                    <div
+                        className={`${panelFrameClass} rounded-xl border p-2 flex flex-col gap-1.5 w-[min(540px,calc(100vw-16px))] max-h-[72vh] overflow-y-auto animate-fade-in ${statusTone.panel}`}
+                        style={{ transform: `translate(${selectionPanelPos.x}px, ${selectionPanelPos.y}px)` }}
+                    >
+                        <div
+                            className={`flex justify-between items-center border-b border-gray-700 pb-1.5 ${canDragPanels ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                            onPointerDown={(e) => startPanelDrag('selection', e)}
+                            onPointerMove={(e) => movePanelDrag('selection', e)}
+                            onPointerUp={(e) => endPanelDrag('selection', e)}
+                            onPointerCancel={(e) => endPanelDrag('selection', e)}
+                            title={canDragPanels ? 'Drag panel (desktop)' : undefined}
+                        >
                             <div className="flex min-w-0 items-center gap-2 text-yellow-400 font-black tracking-wider">
+                                {canDragPanels && (
+                                    <span
+                                        data-drag-handle="true"
+                                        className="text-yellow-300/80 font-mono text-xs px-1 cursor-grab active:cursor-grabbing select-none"
+                                        title="Drag panel"
+                                    >
+                                        :::
+                                    </span>
+                                )}
                                 <Settings2 size={18} className="shrink-0" />
                                 <span className="text-sm shrink-0">{selectedItem.type === 'sender' ? 'PART SPAWNER' : selectedItem.type.toUpperCase()}</span>
                                 {editingName ? (
@@ -1551,7 +1683,7 @@ export const UI: React.FC = () => {
                                                     <span className="truncate">{det.color}</span>
                                                     <span className="uppercase">{det.size}</span>
                                                     <span className="uppercase">{det.shape}</span>
-                                                    <span>{Math.round(det.confidence * 100)}%</span>
+                                                    <span>{Math.round((Number.isFinite(det.confidence) ? det.confidence : 0) * 100)}%</span>
                                                 </div>
                                             ))}
                                             {selectedCameraDetections.length === 0 && (
@@ -1623,6 +1755,27 @@ export const UI: React.FC = () => {
                                 </div>
                                 {selectedItem.type === 'cobot' && (
                                     <div className="rounded-lg border border-gray-700 bg-gray-900/50 px-2 py-1.5 flex flex-col gap-1">
+                                        <button
+                                            onClick={exportSelectedCobotLog}
+                                            className="mb-1 flex items-center justify-center gap-1 rounded bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-200 border border-cyan-500/35 py-1 text-[9px] font-bold transition-colors"
+                                            title="Export this cobot debug log"
+                                        >
+                                            <Download size={11} /> EXPORT LOG
+                                        </button>
+                                        <label className="flex items-center justify-between gap-2">
+                                            <span className="text-[9px] font-bold text-gray-400">COLLISION</span>
+                                            <input
+                                                type="checkbox"
+                                                checked={(selectedItem.config?.cobotCollisionEnabled ?? true) !== false}
+                                                onChange={(e) => updatePlacedItem(selectedItem.id, {
+                                                    config: {
+                                                        ...selectedItem.config,
+                                                        cobotCollisionEnabled: e.target.checked,
+                                                        collisionStopped: e.target.checked ? selectedItem.config?.collisionStopped : false
+                                                    }
+                                                })}
+                                            />
+                                        </label>
                                         <label className="flex items-center justify-between gap-2">
                                             <span className="text-[9px] font-bold text-gray-400">IDLE</span>
                                             <input
@@ -1706,13 +1859,13 @@ export const UI: React.FC = () => {
                                 <div className="flex flex-col gap-1 ml-1">
                                     <input 
                                         type="range" min="0.2" max="10" step="0.1"
-                                        value={simSpeedMult}
+                                        value={simSpeedValue}
                                         onChange={e => {
                                             const next = parseFloat(e.target.value);
                                             setSimSpeedMult(Number.isFinite(next) ? next : 1);
                                         }}
                                         className="w-20 accent-emerald-500 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                                        title={`Speed: ${simSpeedMult.toFixed(1)}x`}
+                                        title={`Speed: ${simSpeedValue.toFixed(1)}x`}
                                     />
                                     <div className="flex gap-1 relative">
                                         <button onClick={handleResetClick} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
@@ -2065,4 +2218,5 @@ const BuildButton: React.FC<{title: string, cost: number, isActive: boolean, onC
         <span className="text-xs font-mono text-gray-500 mt-1">{cost} CR</span>
     </button>
 );
+
 

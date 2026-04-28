@@ -1,5 +1,4 @@
 import './vertex-ai-proxy-interceptor.js';
-import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
@@ -14,8 +13,4 @@ if (!(rootElement as any).__reactRoot) {
     (rootElement as any).__reactRoot = root;
 }
 
-(rootElement as any).__reactRoot.render(
-    <React.StrictMode>
-        <App />
-    </React.StrictMode>
-);
+(rootElement as any).__reactRoot.render(<App />);

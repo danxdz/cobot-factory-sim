@@ -59,10 +59,14 @@ export interface ItemConfig {
     showTeachZones?: boolean; // For Cobots: show pick/drop teaching zones while selected
     showTeachPoints?: boolean; // For Cobots: show taught pick/drop point balls while selected
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
+    uiActiveProgramStepIndex?: number; // For Cobots UI: currently edited program step index
     cobotCollisionEnabled?: boolean; // For Cobots: enable/disable collision safety system
     collisionStopped?: boolean; // For Cobots: local safety pause after collision
     isStopped?: boolean; // For Cobots: manual pause toggle
     triggerUnlock?: number; // For Cobots: force runtime unlock pulse
+    cobotHomeTarget?: [number, number, number]; // For Cobots: saved gripper home/idle target
+    cobotManualTarget?: [number, number, number]; // For Cobots: temporary manual gripper target
+    cobotManualControl?: boolean; // For Cobots: pause automation and jog arm to manual target
     showBeam?: boolean; // For Cameras: show/hide the vision cone
     beltSize?: [number, number]; // For Belts: [width, depth]
     beltHeight?: number; // For Belts: surface height

@@ -14,7 +14,7 @@ import {
     createBelt, createSender, createReceiver, createIndexedReceiver,
     createPile, createTable, createCameraEntity, createPartMesh
 } from '../babylon/entityMeshes';
-import { createCobot, tickCobot, CobotState } from '../babylon/cobotMesh';
+import { createCobot, tickCobot, CobotState, COBOT_PEDESTAL_SAFEZONE_RADIUS, COBOT_PEDESTAL_HEIGHT } from '../babylon/cobotMesh';
 
 const ITEM_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const ITEM_SIZES: PartSize[] = ['small', 'medium', 'large'];
@@ -28,6 +28,8 @@ const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
 const COBOT_PLATFORM_MARGIN = 0.16;
 const COBOT_MOUNT_RANGE_Y = 1.58;
+const COBOT_PEDESTAL_VISIBLE_RADIUS = COBOT_PEDESTAL_SAFEZONE_RADIUS;
+const COBOT_PEDESTAL_BUBBLE_RADIUS = Math.max(0.035, COBOT_PEDESTAL_SAFEZONE_RADIUS * 1.2);
 const SHAPE_BASE_DIAMETER: Record<PartShape, number> = { disc: 0.6, can: 0.56, box: 0.56, pyramid: 0.62 };
 const SHAPE_BASE_HEIGHT: Record<PartShape, number> = { disc: 0.025, can: 0.08, box: 0.08, pyramid: 0.1 };
 const DEFAULT_PART_HALF = SHAPE_BASE_HEIGHT.disc / 2;
@@ -242,6 +244,8 @@ export const BabylonScene: React.FC = () => {
         // ── PHYSICS (ground only, parts use manual simulation) ───────────────
         const partMeshes: Mesh[] = [];
         const partMeshKinds: string[] = [];
+        const lastStateByItemId = new Map<string, 'free' | 'targeted' | 'grabbed' | 'dead'>();
+        const justReleasedUntil = new Map<string, number>();
         const velY = new Map<number, number>(); // pool index → vertical velocity
         const velXZ = new Map<number, Vector3>(); // pool index → planar velocity
         const spinY = new Map<number, number>(); // pool index → angular yaw speed
@@ -266,6 +270,7 @@ export const BabylonScene: React.FC = () => {
 
         function cobotRuntimeState(cState: CobotState, isRunning: boolean): MachineRuntimeState {
             if (!isRunning) return { health: 'idle', label: 'Idle', detail: 'Simulation stopped' };
+            if (cState.manualControl && cState.manualTarget) return { health: 'idle', label: 'Arm Jog', detail: 'Manual arm target active' };
             if (cState.safetyStopped) return { health: 'warning', label: 'Safety Stop', detail: 'Paused due to obstruction or rule violation' };
             if (cState.reducedSpeedActive) {
                 const speedPct = Math.round((cState.safetySpeedFactor || 1) * 100);
@@ -418,6 +423,24 @@ export const BabylonScene: React.FC = () => {
                         }
                     }
                     if (!itm.config?.collisionStopped) cState.safetyStopped = false;
+                    const configuredHome = itm.config?.cobotHomeTarget;
+                    const nextHome = configuredHome
+                        ? new Vector3(configuredHome[0], configuredHome[1], configuredHome[2])
+                        : new Vector3(itm.position[0], itm.position[1] + 2.2, itm.position[2]);
+                    if (Vector3.Distance(cState.idleTarget, nextHome) > 0.001) {
+                        cState.idleTarget.copyFrom(nextHome);
+                    }
+                    cState.manualControl = itm.config?.cobotManualControl === true;
+                    cState.manualTarget = itm.config?.cobotManualTarget
+                        ? new Vector3(itm.config.cobotManualTarget[0], itm.config.cobotManualTarget[1], itm.config.cobotManualTarget[2])
+                        : null;
+                    if (cState.manualControl && cState.manualTarget) {
+                        cState.safetyStopped = false;
+                        cState.phase = 'idle';
+                        cState.targetedItem = null;
+                        cState.yieldTarget = null;
+                        cState.desiredTarget.copyFrom(cState.manualTarget);
+                    }
                     cState.program = itm.config?.program || [];
                     cState.speed = itm.config?.speed || 1.0;
                     cState.pickColors = itm.config?.pickColors || [];
@@ -474,10 +497,26 @@ export const BabylonScene: React.FC = () => {
         pickCoreMat.disableLighting = true;
         pickCoreMat.disableDepthWrite = true;
 
+        const moveZoneMat = new PBRMaterial('moveZoneMat', scene);
+        moveZoneMat.albedoColor = Color3.FromHexString('#10b981');
+        moveZoneMat.emissiveColor = Color3.FromHexString('#10b981').scale(0.62);
+        moveZoneMat.alpha = 0.88;
+        moveZoneMat.transparencyMode = 2;
+
+        const activePointMat = new StandardMaterial('activePointMat', scene);
+        activePointMat.emissiveColor = Color3.FromHexString('#facc15');
+        activePointMat.disableLighting = true;
+        activePointMat.disableDepthWrite = true;
+
         const dropCoreMat = new StandardMaterial('dropCoreMat', scene);
         dropCoreMat.emissiveColor = Color3.FromHexString('#f87171');
         dropCoreMat.disableLighting = true;
         dropCoreMat.disableDepthWrite = true;
+        const pedestalBubbleMat = new StandardMaterial('pedestalBubbleMat', scene);
+        pedestalBubbleMat.emissiveColor = Color3.FromHexString('#22d3ee');
+        pedestalBubbleMat.alpha = 0.72;
+        pedestalBubbleMat.disableLighting = true;
+        pedestalBubbleMat.disableDepthWrite = true;
 
         const armRangeMat = new PBRMaterial('armRangeMat', scene);
         armRangeMat.albedoColor = Color3.FromHexString('#f8fafc');
@@ -520,6 +559,7 @@ export const BabylonScene: React.FC = () => {
                     mountSlot: selected.config?.mountSlot,
                     stackMatrix: selected.config?.stackMatrix,
                     program: selected.config?.program || [],
+                    activeStep: selected.config?.uiActiveProgramStepIndex ?? null,
                     showPoints,
                     showRange,
                 })
@@ -550,13 +590,44 @@ export const BabylonScene: React.FC = () => {
                 range.material = armRangeMat;
                 range.isPickable = false;
                 range.parent = teachZoneRoot;
+                const pedestalKeepout = MeshBuilder.CreateTorus('arm_pedestal_safezone', {
+                    diameter: Math.max(0.04, COBOT_PEDESTAL_VISIBLE_RADIUS * 2),
+                    thickness: 0.016,
+                    tessellation: 48,
+                }, scene);
+                pedestalKeepout.position.set(mountX, selected.position[1] + COBOT_PLATFORM_TOP_Y + 0.02, mountZ);
+                pedestalKeepout.material = dropZoneMat;
+                pedestalKeepout.isPickable = false;
+                pedestalKeepout.parent = teachZoneRoot;
+            }
+            if (showRange || showPoints) {
+                const baseRotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][selected.rotation] ?? 0;
+                const mountLocal = cobotMountLocal(selected.config);
+                const localX = mountLocal.x;
+                const localZ = mountLocal.z;
+                const mountX = selected.position[0] + localX * Math.cos(baseRotY) + localZ * Math.sin(baseRotY);
+                const mountZ = selected.position[2] - localX * Math.sin(baseRotY) + localZ * Math.cos(baseRotY);
+                const pedestalBubble = MeshBuilder.CreateSphere('arm_pedestal_safe_bubble', {
+                    diameter: COBOT_PEDESTAL_BUBBLE_RADIUS * 2,
+                    segments: 18,
+                }, scene);
+                pedestalBubble.position.set(
+                    mountX,
+                    selected.position[1] + COBOT_PLATFORM_TOP_Y + COBOT_PEDESTAL_HEIGHT + COBOT_PEDESTAL_BUBBLE_RADIUS + 0.01,
+                    mountZ
+                );
+                pedestalBubble.material = pedestalBubbleMat;
+                pedestalBubble.isPickable = false;
+                pedestalBubble.renderingGroupId = 2;
+                pedestalBubble.parent = teachZoneRoot;
             }
             if (showPoints) {
                 const program = selected.config?.program || [];
-                const teachSteps: Array<{ action: 'pick' | 'drop'; pos: [number, number, number]; key: string; synthetic?: boolean }> = [];
+                const activeStepIndex = selected.config?.uiActiveProgramStepIndex ?? -1;
+                const teachSteps: Array<{ action: 'move' | 'pick' | 'drop'; pos: [number, number, number]; key: string; synthetic?: boolean; active?: boolean }> = [];
                 program.forEach((step, idx) => {
-                    if ((step.action !== 'pick' && step.action !== 'drop') || !step.pos) return;
-                    teachSteps.push({ action: step.action, pos: step.pos as [number, number, number], key: String(idx) });
+                    if ((step.action !== 'move' && step.action !== 'pick' && step.action !== 'drop') || !step.pos) return;
+                    teachSteps.push({ action: step.action, pos: step.pos as [number, number, number], key: String(idx), active: idx === activeStepIndex });
                 });
                 if (!program.some(step => step.action === 'drop')) {
                     const centerX = selected.position[0];
@@ -579,19 +650,26 @@ export const BabylonScene: React.FC = () => {
                     teachSteps.push({ action: 'drop', pos: autoDropPos, key: 'auto_drop_center', synthetic: true });
                 }
                 teachSteps.forEach((step, idx) => {
-                    const mat = step.action === 'pick' ? pickZoneMat : dropZoneMat;
-                    const y = Math.max(0.06, step.pos[1] + 0.03);
-                    
+                    const surfaceY = getSupportSurfaceY(step.pos[0], step.pos[2], st.placedItems);
+                    const anchorY = Math.max(0.06, Math.max(step.pos[1], surfaceY + 0.02));
+                    const markerY = anchorY + (step.action === 'move' ? 0.23 : 0.28);
+                    const mat = step.active
+                        ? activePointMat
+                        : step.action === 'move'
+                            ? moveZoneMat
+                            : step.action === 'pick'
+                                ? pickZoneMat
+                                : dropZoneMat;
                     const ball = MeshBuilder.CreateSphere(`teach_${step.action}_ball_${step.key}_${idx}`, {
-                        diameter: 0.34,
+                        diameter: step.action === 'move' ? 0.28 : 0.34,
                         segments: 24,
                     }, scene);
-                    ball.position.set(step.pos[0], y + 0.28, step.pos[2]);
+                    ball.position.set(step.pos[0], markerY, step.pos[2]);
                     ball.material = mat;
                     ball.isPickable = false;
                     ball.parent = teachZoneRoot;
+                    if (step.active) ball.renderingGroupId = 2;
 
-                    const surfaceY = getSupportSurfaceY(step.pos[0], step.pos[2], st.placedItems);
                     const isClipping = step.pos[1] < surfaceY - 0.04;
 
                     if (isClipping || step.synthetic) {
@@ -688,109 +766,107 @@ export const BabylonScene: React.FC = () => {
             delete simState.cameraFrames[id];
         }
 
-        function captureSelectedCameraPreview(st: ReturnType<typeof factoryStore.getState>) {
-            const selected = st.selectedItemId ? st.placedItems.find(i => i.id === st.selectedItemId) : null;
-            if (!selected || selected.type !== 'camera') {
-                for (const id of [...previewCams.keys()]) disposeCameraPreview(id);
-                return;
+        function captureCameraPreviews(st: ReturnType<typeof factoryStore.getState>) {
+            const cameraItems = st.placedItems.filter(i => i.type === 'camera');
+            const liveIds = new Set(cameraItems.map(cam => cam.id));
+            for (const id of [...previewCams.keys()]) {
+                if (!liveIds.has(id)) disposeCameraPreview(id);
             }
+            if (cameraItems.length === 0) return;
+
             const previewFps = Math.max(1, Math.min(30, Math.round(st.cameraPreviewFps || 8)));
             const frameIntervalMs = Math.max(33, Math.round(1000 / previewFps));
             const previewWidth = Math.max(160, Math.min(1024, Math.round(st.cameraPreviewWidth || 320)));
             const previewHeight = Math.max(100, Math.min(768, Math.round(st.cameraPreviewHeight || 200)));
-            const camItem = selected;
-            for (const id of [...previewCams.keys()]) {
-                if (id !== camItem.id) disposeCameraPreview(id);
-            }
 
-            let feedCam = previewCams.get(camItem.id);
-            if (!feedCam) {
-                feedCam = new FreeCamera(`preview_cam_${camItem.id}`, new Vector3(camItem.position[0], camItem.position[1] + 2, camItem.position[2]), scene);
-                feedCam.fov = 0.9;
-                feedCam.minZ = 0.02;
-                feedCam.maxZ = 25;
-                previewCams.set(camItem.id, feedCam);
-            }
-
-            let rtt = previewRTTs.get(camItem.id);
-            if (rtt) {
-                const sz = rtt.getSize();
-                if (sz.width !== previewWidth || sz.height !== previewHeight) {
-                    const idx = scene.customRenderTargets.indexOf(rtt);
-                    if (idx >= 0) scene.customRenderTargets.splice(idx, 1);
-                    rtt.dispose();
-                    previewRTTs.delete(camItem.id);
-                    rtt = undefined;
+            for (const camItem of cameraItems) {
+                let feedCam = previewCams.get(camItem.id);
+                if (!feedCam) {
+                    feedCam = new FreeCamera(`preview_cam_${camItem.id}`, new Vector3(camItem.position[0], camItem.position[1] + 2, camItem.position[2]), scene);
+                    feedCam.fov = 0.9;
+                    feedCam.minZ = 0.02;
+                    feedCam.maxZ = 25;
+                    previewCams.set(camItem.id, feedCam);
                 }
-            }
-            if (!rtt) {
-                rtt = new RenderTargetTexture(`preview_rtt_${camItem.id}`, { width: previewWidth, height: previewHeight }, scene, false, false);
-                rtt.activeCamera = feedCam;
-                rtt.samples = 1;
-                scene.customRenderTargets.push(rtt);
-                previewRTTs.set(camItem.id, rtt);
-            }
 
-            const camNode = entityNodes.get(camItem.id);
-            const camRoot = camNode?.getChildTransformNodes().find(n => n.name === 'camRoot');
-            const lensMesh = camNode?.getChildMeshes().find(m => m.name === 'lens');
-            if (camRoot) {
-                const worldDir = camRoot.getDirection(new Vector3(0, -1, 0)).normalize();
-                const lensPos = lensMesh?.getAbsolutePosition() ?? camRoot.getAbsolutePosition();
-                const eyePos = lensPos.add(worldDir.scale(0.1));
-                feedCam.position.copyFrom(eyePos);
-                feedCam.setTarget(eyePos.add(worldDir.scale(4)));
-            } else {
-                feedCam.position.set(camItem.position[0], camItem.position[1] + 2.2, camItem.position[2]);
-                feedCam.setTarget(new Vector3(camItem.position[0], camItem.position[1], camItem.position[2]));
-            }
-            feedCam.minZ = 0.03;
-            feedCam.maxZ = 25;
-
-            // Do not render the selected camera's own meshes in its preview feed.
-            const hidden = camNode ? new Set(camNode.getChildMeshes()) : null;
-            rtt.renderList = scene.meshes.filter(mesh => {
-                if (hidden?.has(mesh)) return false;
-                if (mesh === lensMesh) return false;
-                if (!mesh.isEnabled()) return false;
-                return mesh.isVisible;
-            });
-
-            const now = performance.now();
-            const lastAt = previewCaptureAt.get(camItem.id) ?? 0;
-            if (now - lastAt < frameIntervalMs) return;
-            if (previewPending.has(camItem.id)) return;
-            previewCaptureAt.set(camItem.id, now);
-            previewPending.add(camItem.id);
-            // Force a render pass before readback so preview does not stay stale/black.
-            rtt.render(true);
-            Promise.resolve(rtt.readPixels(0, 0)).then((pixels) => {
-                previewPending.delete(camItem.id);
-                if (!pixels) return;
-                const w = rtt!.getSize().width;
-                const h = rtt!.getSize().height;
-                const canvas = document.createElement('canvas');
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext('2d');
-                if (!ctx) return;
-                const img = ctx.createImageData(w, h);
-                const row = w * 4;
-                for (let y = 0; y < h; y++) {
-                    const src = (h - 1 - y) * row;
-                    const dst = y * row;
-                    for (let i = 0; i < row; i += 4) {
-                        img.data[dst + i] = pixels[src + i];
-                        img.data[dst + i + 1] = pixels[src + i + 1];
-                        img.data[dst + i + 2] = pixels[src + i + 2];
-                        img.data[dst + i + 3] = 255;
+                let rtt = previewRTTs.get(camItem.id);
+                if (rtt) {
+                    const sz = rtt.getSize();
+                    if (sz.width !== previewWidth || sz.height !== previewHeight) {
+                        const idx = scene.customRenderTargets.indexOf(rtt);
+                        if (idx >= 0) scene.customRenderTargets.splice(idx, 1);
+                        rtt.dispose();
+                        previewRTTs.delete(camItem.id);
+                        rtt = undefined;
                     }
                 }
-                ctx.putImageData(img, 0, 0);
-                simState.cameraFrames[camItem.id] = canvas.toDataURL('image/jpeg', 0.72);
-            }).catch(() => {
-                previewPending.delete(camItem.id);
-            });
+                if (!rtt) {
+                    rtt = new RenderTargetTexture(`preview_rtt_${camItem.id}`, { width: previewWidth, height: previewHeight }, scene, false, false);
+                    rtt.activeCamera = feedCam;
+                    rtt.samples = 1;
+                    scene.customRenderTargets.push(rtt);
+                    previewRTTs.set(camItem.id, rtt);
+                }
+
+                const camNode = entityNodes.get(camItem.id);
+                const camRoot = camNode?.getChildTransformNodes().find(n => n.name === 'camRoot');
+                const lensMesh = camNode?.getChildMeshes().find(m => m.name === 'lens');
+                if (camRoot) {
+                    const worldDir = camRoot.getDirection(new Vector3(0, -1, 0)).normalize();
+                    const lensPos = lensMesh?.getAbsolutePosition() ?? camRoot.getAbsolutePosition();
+                    const eyePos = lensPos.add(worldDir.scale(0.1));
+                    feedCam.position.copyFrom(eyePos);
+                    feedCam.setTarget(eyePos.add(worldDir.scale(4)));
+                } else {
+                    feedCam.position.set(camItem.position[0], camItem.position[1] + 2.2, camItem.position[2]);
+                    feedCam.setTarget(new Vector3(camItem.position[0], camItem.position[1], camItem.position[2]));
+                }
+                feedCam.minZ = 0.03;
+                feedCam.maxZ = 25;
+
+                const hidden = camNode ? new Set(camNode.getChildMeshes()) : null;
+                rtt.renderList = scene.meshes.filter(mesh => {
+                    if (hidden?.has(mesh)) return false;
+                    if (mesh === lensMesh) return false;
+                    if (!mesh.isEnabled()) return false;
+                    return mesh.isVisible;
+                });
+
+                const now = performance.now();
+                const lastAt = previewCaptureAt.get(camItem.id) ?? 0;
+                if (now - lastAt < frameIntervalMs) continue;
+                if (previewPending.has(camItem.id)) continue;
+                previewCaptureAt.set(camItem.id, now);
+                previewPending.add(camItem.id);
+                rtt.render(true);
+                Promise.resolve(rtt.readPixels(0, 0)).then((pixels) => {
+                    previewPending.delete(camItem.id);
+                    if (!pixels) return;
+                    const w = rtt!.getSize().width;
+                    const h = rtt!.getSize().height;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) return;
+                    const img = ctx.createImageData(w, h);
+                    const row = w * 4;
+                    for (let y = 0; y < h; y++) {
+                        const src = (h - 1 - y) * row;
+                        const dst = y * row;
+                        for (let i = 0; i < row; i += 4) {
+                            img.data[dst + i] = pixels[src + i];
+                            img.data[dst + i + 1] = pixels[src + i + 1];
+                            img.data[dst + i + 2] = pixels[src + i + 2];
+                            img.data[dst + i + 3] = 255;
+                        }
+                    }
+                    ctx.putImageData(img, 0, 0);
+                    simState.cameraFrames[camItem.id] = canvas.toDataURL('image/jpeg', 0.72);
+                }).catch(() => {
+                    previewPending.delete(camItem.id);
+                });
+            }
         }
 
         // ── POINTER EVENTS ──────────────────────────────────────────────────
@@ -1223,7 +1299,7 @@ export const BabylonScene: React.FC = () => {
                 prevDraft = draftPlacement;
                 syncEntities(draftPlacement ? [...placedItems, draftPlacement] : placedItems);
             }
-            captureSelectedCameraPreview(st);
+            captureCameraPreviews(st);
 
             // Sync gizmo state
             if (moveModeItemId !== prevMoveModeItemId) {
@@ -1355,8 +1431,22 @@ export const BabylonScene: React.FC = () => {
 
             // ── Manual physics sync ───────────────────────────────────────
             const GRAVITY = 9.81;
+            const SLOT_SNAP_LOCK_DIST = 0.02;
+            const SLOT_SNAP_LOCK_SPEED = 0.055;
 
             simState.items.forEach((simItem, index) => {
+                const nowSec = performance.now() * 0.001;
+                const prevState = lastStateByItemId.get(simItem.id);
+                const justReleased = prevState === 'grabbed' && simItem.state === 'free';
+                if (justReleased) {
+                    justReleasedUntil.set(simItem.id, nowSec + 0.32);
+                    const planar = velXZ.get(index) ?? Vector3.Zero();
+                    planar.set(0, 0, 0);
+                    velXZ.set(index, planar);
+                    velY.set(index, 0);
+                    spinY.set(index, 0);
+                }
+                const inReleaseSettleWindow = (justReleasedUntil.get(simItem.id) ?? 0) > nowSec;
                 const meshKey = partMeshKeyFor(simItem);
                 if (!partMeshes[index] || partMeshKinds[index] !== meshKey) {
                     partMeshes[index]?.dispose();
@@ -1379,6 +1469,8 @@ export const BabylonScene: React.FC = () => {
                     velY.delete(index);
                     velXZ.delete(index);
                     spinY.delete(index);
+                    lastStateByItemId.delete(simItem.id);
+                    justReleasedUntil.delete(simItem.id);
                     return;
                 }
 
@@ -1465,7 +1557,8 @@ export const BabylonScene: React.FC = () => {
                             velY.set(index, 0);
                         }
                     } else {
-                        const friction = Math.max(0, 1 - delta * (Math.abs(vy) < 0.08 ? 4.2 : 2.6));
+                        const settleExtra = inReleaseSettleWindow ? 5.4 : 0;
+                        const friction = Math.max(0, 1 - delta * (Math.abs(vy) < 0.08 ? (4.2 + settleExtra) : (2.6 + settleExtra * 0.7)));
                         planarVel.x *= friction;
                         planarVel.z *= friction;
                     }
@@ -1494,31 +1587,60 @@ export const BabylonScene: React.FC = () => {
                         const supportItem = getTopSupportItem(simItem.pos.x, simItem.pos.z, placedItems, simItem);
                         const restingOnStaticSupport = !!supportItem && !['belt', 'sender'].includes(supportItem.type) && Math.abs(simItem.pos.y - surfY) < 0.05;
                         const planarSpeed = Math.sqrt(planarVel.x * planarVel.x + planarVel.z * planarVel.z);
+                        const isOwnPlatform = supportItem?.type === 'cobot';
                         if (restingOnStaticSupport) {
-                            planarVel.x *= Math.max(0, 1 - delta * 18);
-                            planarVel.z *= Math.max(0, 1 - delta * 18);
+                            const settleDamping = (isOwnPlatform ? 26 : 20) + (inReleaseSettleWindow ? 8 : 0);
+                            planarVel.x *= Math.max(0, 1 - delta * settleDamping);
+                            planarVel.z *= Math.max(0, 1 - delta * settleDamping);
                             if (Math.abs(planarVel.x) + Math.abs(planarVel.z) < 0.015) {
                                 planarVel.x = 0;
                                 planarVel.z = 0;
                             }
                             velXZ.set(index, planarVel);
                         }
-                        if (supportItem && Math.abs(simItem.pos.y - surfY) < 0.035) {
+                        if (!inReleaseSettleWindow && supportItem && Math.abs(simItem.pos.y - surfY) < 0.035) {
                             const snapped = nearestGridSlotForSupport(supportItem, simItem.pos.x, simItem.pos.z);
                             if (snapped) {
                                 const dx = snapped.x - simItem.pos.x;
                                 const dz = snapped.z - simItem.pos.z;
                                 const planarDist = Math.sqrt(dx * dx + dz * dz);
-                                const maxSnapDist = Math.min(snapped.captureRadius, 0.14);
-                                if (planarDist <= maxSnapDist && planarSpeed < 0.08) {
-                                    simItem.pos.x += (snapped.x - simItem.pos.x) * Math.min(1, delta * 4.5);
-                                    simItem.pos.z += (snapped.z - simItem.pos.z) * Math.min(1, delta * 4.5);
+                                const maxSnapDist = Math.min(snapped.captureRadius, isOwnPlatform ? 0.2 : 0.14);
+                                if (planarDist <= maxSnapDist && planarSpeed < (isOwnPlatform ? 0.14 : 0.1)) {
+                                    const snapGain = isOwnPlatform ? 8.5 : 6.2;
+                                    const desiredVx = dx * snapGain;
+                                    const desiredVz = dz * snapGain;
+                                    const accel = isOwnPlatform ? 15.5 : 12.5;
+                                    planarVel.x += (desiredVx - planarVel.x) * Math.min(1, delta * accel);
+                                    planarVel.z += (desiredVz - planarVel.z) * Math.min(1, delta * accel);
+                                    const snapMaxSpeed = isOwnPlatform ? 0.78 : 0.58;
+                                    const vLen = Math.sqrt(planarVel.x * planarVel.x + planarVel.z * planarVel.z);
+                                    if (vLen > snapMaxSpeed && vLen > 0.0001) {
+                                        const s = snapMaxSpeed / vLen;
+                                        planarVel.x *= s;
+                                        planarVel.z *= s;
+                                    }
+                                    simItem.pos.x += planarVel.x * delta;
+                                    simItem.pos.z += planarVel.z * delta;
                                     const snappedY = stackedSurfaceYAt(simItem.pos.x, simItem.pos.z);
                                     if (simItem.pos.y <= snappedY + 0.05) {
                                         simItem.pos.y = snappedY;
                                         vy = 0;
                                         velY.set(index, 0);
                                         surfY = snappedY;
+                                    }
+                                    const postDx = snapped.x - simItem.pos.x;
+                                    const postDz = snapped.z - simItem.pos.z;
+                                    const postDist = Math.sqrt(postDx * postDx + postDz * postDz);
+                                    const postSpeed = Math.sqrt(planarVel.x * planarVel.x + planarVel.z * planarVel.z);
+                                    if (postDist <= SLOT_SNAP_LOCK_DIST && postSpeed <= SLOT_SNAP_LOCK_SPEED) {
+                                        simItem.pos.x = snapped.x;
+                                        simItem.pos.z = snapped.z;
+                                        planarVel.x = 0;
+                                        planarVel.z = 0;
+                                        velXZ.set(index, planarVel);
+                                        spinY.set(index, 0);
+                                    } else {
+                                        velXZ.set(index, planarVel);
                                     }
                                 }
                             }
@@ -1655,6 +1777,7 @@ export const BabylonScene: React.FC = () => {
                 if (!mesh || simItem.state === 'dead') return;
                 mesh.position.copyFrom(simItem.pos);
                 mesh.rotation.y = simItem.rotY;
+                lastStateByItemId.set(simItem.id, simItem.state);
             });
 
             // Hide unused pool slots

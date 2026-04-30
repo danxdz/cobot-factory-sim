@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useRef, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle, Link2, Target, List, Home } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
 import { simState, SimItem } from '../simState';
@@ -210,9 +210,7 @@ const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCan
 };
 
 export const UI: React.FC = () => {
-    const [showVisionConfig, setShowVisionConfig] = useState(false);
-    const [showController, setShowController] = useState(false);
-    const [showTransforms, setShowTransforms] = useState(false);
+    const [openCobotSection, setOpenCobotSection] = useState<'transform' | 'vision' | 'controller' | null>('transform');
     const [snapInputs, setSnapInputs] = useState(true);
     const [editingName, setEditingName] = useState(false);
     const [draftName, setDraftName] = useState('');
@@ -227,10 +225,12 @@ export const UI: React.FC = () => {
     const [cameraPreviewMode, setCameraPreviewMode] = useState<'graph' | 'video'>('video');
     const [showMasterPanel, setShowMasterPanel] = useState(true);
     const [masterCameraId, setMasterCameraId] = useState<string | null>(null);
-    const [flatPanels, setFlatPanels] = useState(true);
+    const [masterCameraIds, setMasterCameraIds] = useState<string[]>([]);
+    const masterCameraListTouched = useRef(false);
     const [masterPanelPos, setMasterPanelPos] = useState({ x: 0, y: 0 });
     const [selectionPanelPos, setSelectionPanelPos] = useState({ x: 0, y: 0 });
-    const [canDragPanels, setCanDragPanels] = useState(() => window.innerWidth >= 1024);
+    const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+    const [canDragPanels, setCanDragPanels] = useState(() => window.innerWidth >= 768);
     const dragRef = useRef<{
         key: 'master' | 'selection' | null;
         pointerId: number | null;
@@ -293,6 +293,9 @@ export const UI: React.FC = () => {
     const selectedMachineState = selectedItem ? machineStates[selectedItem.id] : undefined;
     const selectedLabel = selectedItem?.name || selectedItem?.id || '';
     const teachMinimized = !!teachAction && selectedItem?.type === 'cobot';
+    const showTransforms = openCobotSection === 'transform';
+    const showVisionConfig = openCobotSection === 'vision';
+    const showController = openCobotSection === 'controller';
     const activeTemplate = partTemplates.find(t => t.id === activeTemplateId) || null;
     const selectedCameraDetections = selectedItem?.type === 'camera'
         ? simState.cameraDetections
@@ -301,13 +304,18 @@ export const UI: React.FC = () => {
             .sort((a, b) => b.confidence - a.confidence)
         : [];
     const cameraResolutionKey = `${cameraPreviewWidth}x${cameraPreviewHeight}`;
-    const masterCamera = cameras.find(c => c.id === masterCameraId) || cameras[0] || null;
-    const masterCameraDetections = masterCamera
-        ? simState.cameraDetections
-            .filter(det => det.cameraId === masterCamera.id)
+    const cameraIds = cameras.map(cam => cam.id);
+    const cameraIdsSig = cameraIds.join('|');
+    const cameraDetectionsFor = (cameraId: string) =>
+        simState.cameraDetections
+            .filter(det => det.cameraId === cameraId)
             .slice()
-            .sort((a, b) => b.confidence - a.confidence)
-        : [];
+            .sort((a, b) => b.confidence - a.confidence);
+    const displayedMasterCameras = masterCameraIds
+        .map(id => cameras.find(cam => cam.id === id))
+        .filter((cam): cam is PlacedItem => !!cam);
+    const displayedMasterCameraIdsSig = displayedMasterCameras.map(cam => cam.id).join('|');
+    const hiddenMasterCameras = cameras.filter(cam => !masterCameraIds.includes(cam.id));
     const scoreValue = Number.isFinite(score) ? score : 0;
     const creditsValue = Number.isFinite(credits) ? credits : 0;
     const simSpeedValue = Number.isFinite(simSpeedMult) ? simSpeedMult : 1;
@@ -323,6 +331,7 @@ export const UI: React.FC = () => {
         else looseParts += 1;
     });
     const producedEstimate = liveParts.length + scoreValue;
+    const droppedEstimate = Math.max(scoreValue, stockedParts);
 
     let cobotRunning = 0;
     let cobotWarning = 0;
@@ -335,16 +344,20 @@ export const UI: React.FC = () => {
         else if (runtime?.health === 'running') cobotRunning += 1;
         else cobotIdle += 1;
     });
-    const camerasWithFeed = cameras.filter(cam => !!simState.cameraFrames[cam.id]).length;
+    const camerasWithFeed = displayedMasterCameras.filter(cam => !!simState.cameraFrames[cam.id]).length;
 
     useEffect(() => {
         setEditingName(false);
         setDraftName(selectedItem?.name || selectedItem?.id || '');
         if (teachAction && selectedItem?.type === 'cobot') {
-            setShowVisionConfig(false);
-            setShowController(false);
+            setOpenCobotSection('controller');
         }
     }, [selectedItemId, selectedItem?.name, selectedItem?.id, selectedItem?.type, teachAction]);
+    useEffect(() => {
+        if (selectedItem?.type === 'cobot') {
+            setOpenCobotSection('transform');
+        }
+    }, [selectedItemId]);
 
     useEffect(() => {
         if (partTemplates.length === 0) {
@@ -356,39 +369,68 @@ export const UI: React.FC = () => {
         }
     }, [partTemplates, activeTemplateId]);
     useEffect(() => {
-        if (selectedItem?.type !== 'camera' || cameraPreviewMode !== 'video') return;
+        if (cameraPreviewMode !== 'video' || cameras.length === 0) return;
         const fps = Math.max(1, Math.min(30, Math.round(cameraPreviewFps || 8)));
         const intervalMs = Math.max(33, Math.round(1000 / fps));
         const timer = window.setInterval(() => {
             setCameraFrameTick(v => v + 1);
         }, intervalMs);
         return () => window.clearInterval(timer);
-    }, [selectedItem?.id, selectedItem?.type, cameraPreviewMode, cameraPreviewFps]);
+    }, [cameras.length, cameraPreviewMode, cameraPreviewFps]);
     useEffect(() => {
-        if (cameras.length === 0) {
+        setMasterCameraIds(prev => {
+            const kept = prev.filter(id => cameraIds.includes(id));
+            if (!masterCameraListTouched.current) {
+                return prev.join('|') === cameraIdsSig ? prev : cameraIds;
+            }
+            if (kept.join('|') === prev.join('|')) return prev;
+            return kept;
+        });
+    }, [cameraIdsSig]);
+    useEffect(() => {
+        if (displayedMasterCameras.length === 0) {
             if (masterCameraId !== null) setMasterCameraId(null);
             return;
         }
-        if (!masterCameraId || !cameras.some(cam => cam.id === masterCameraId)) {
-            setMasterCameraId(cameras[0].id);
+        if (!masterCameraId || !displayedMasterCameras.some(cam => cam.id === masterCameraId)) {
+            setMasterCameraId(displayedMasterCameras[0].id);
         }
-    }, [cameras, masterCameraId]);
+    }, [displayedMasterCameraIdsSig, masterCameraId]);
     useEffect(() => {
         const onResize = () => {
-            const desktop = window.innerWidth >= 1024;
+            setIsMobile(window.innerWidth < 768);
+            const desktop = window.innerWidth >= 768;
             setCanDragPanels(desktop);
             if (!desktop) {
                 setMasterPanelPos({ x: 0, y: 0 });
                 setSelectionPanelPos({ x: 0, y: 0 });
             }
         };
+        onResize();
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
     }, []);
 
-    const panelFrameClass = flatPanels
-        ? 'bg-gray-900/95 border border-gray-700 shadow-none backdrop-blur-0'
-        : 'bg-gray-900/92 border border-gray-700 shadow-2xl backdrop-blur-md';
+    const panelFrameClass = 'bg-slate-900/92 border border-slate-700 shadow-2xl backdrop-blur-md';
+    const chromeCardClass = 'bg-slate-900/92 backdrop-blur-md rounded-xl border border-slate-700 shadow-xl';
+    const rootOverlayClass = `absolute inset-0 pointer-events-none flex flex-col justify-between relative min-h-[100dvh] p-2 sm:p-6 ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+10px)] overflow-hidden' : ''}`;
+    const masterPanelBodyClass = isMobile
+        ? 'p-2 sm:p-3 flex flex-col gap-2 max-h-[min(56dvh,460px)] overflow-y-auto overscroll-contain'
+        : 'p-2 sm:p-3 flex flex-col gap-2 max-h-[68vh] overflow-y-auto';
+    const selectionPanelMaxHClass = isMobile
+        ? 'max-h-[calc(100dvh-180px)]'
+        : 'max-h-[72vh]';
+
+    const clampMasterPanelOffset = (x: number, y: number) => {
+        const maxLeft = -(window.innerWidth - 180);
+        const maxRight = 36;
+        const maxUp = -80;
+        const maxDown = Math.max(80, Math.min(420, window.innerHeight - 220));
+        return {
+            x: Math.max(maxLeft, Math.min(maxRight, x)),
+            y: Math.max(maxUp, Math.min(maxDown, y)),
+        };
+    };
 
     const startPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
         if (!canDragPanels || e.button !== 0) return;
@@ -411,10 +453,14 @@ export const UI: React.FC = () => {
         if (dragRef.current.key !== key || dragRef.current.pointerId !== e.pointerId) return;
         const dx = e.clientX - dragRef.current.startX;
         const dy = e.clientY - dragRef.current.startY;
+        if (key === 'master') {
+            const clamped = clampMasterPanelOffset(dragRef.current.originX + dx, dragRef.current.originY + dy);
+            setMasterPanelPos(clamped);
+            return;
+        }
         const nextX = Math.max(-520, Math.min(520, dragRef.current.originX + dx));
         const nextY = Math.max(-340, Math.min(340, dragRef.current.originY + dy));
-        if (key === 'master') setMasterPanelPos({ x: nextX, y: nextY });
-        else setSelectionPanelPos({ x: nextX, y: nextY });
+        setSelectionPanelPos({ x: nextX, y: nextY });
     };
 
     const endPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
@@ -484,6 +530,20 @@ export const UI: React.FC = () => {
                 setBuildMode(null);
             }
         }
+    };
+
+    const handleAddMasterCamera = () => {
+        const next = hiddenMasterCameras[0];
+        if (!next) return;
+        masterCameraListTouched.current = true;
+        setMasterCameraIds(prev => [...prev, next.id]);
+        setMasterCameraId(next.id);
+    };
+
+    const hideMasterCameraFeed = (cameraId: string) => {
+        masterCameraListTouched.current = true;
+        setMasterCameraIds(prev => prev.filter(id => id !== cameraId));
+        if (masterCameraId === cameraId) setMasterCameraId(null);
     };
 
     const doStop = () => {
@@ -648,7 +708,7 @@ export const UI: React.FC = () => {
 
     const handleClearProgram = () => {
         if (selectedItem) {
-            updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, program: [] } });
+            updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, program: [], uiActiveProgramStepIndex: undefined } });
         }
     };
 
@@ -695,7 +755,14 @@ export const UI: React.FC = () => {
                     sortShape: selectedItem.config?.defaultDropSortShape !== false,
                 }
                 : { action, pos: [...lastPos] as [number, number, number] };
-        updateProgram([...current, nextStep]);
+        const nextProgram = [...current, nextStep];
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                ...selectedItem.config,
+                program: nextProgram,
+                uiActiveProgramStepIndex: nextProgram.length - 1,
+            }
+        });
     };
 
     const patchProgramStep = (index: number, patch: Partial<ProgramStep>) => {
@@ -717,6 +784,14 @@ export const UI: React.FC = () => {
     const removeProgramStep = (index: number) => {
         if (!selectedItem) return;
         updateProgram((selectedItem.config?.program || []).filter((_, idx) => idx !== index));
+    };
+    const setActiveProgramStepIndex = (index: number | null) => {
+        if (!selectedItem || selectedItem.type !== 'cobot') return;
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                uiActiveProgramStepIndex: index === null ? undefined : Math.max(0, index),
+            }
+        });
     };
 
     const setCobotOverlay = (patch: { showTeachPoints?: boolean; showArmRange?: boolean; showPathPreview?: boolean }) => {
@@ -756,6 +831,64 @@ export const UI: React.FC = () => {
     const controllerSortColor = selectedItem?.config?.defaultDropSortColor !== false;
     const controllerSortSize = selectedItem?.config?.defaultDropSortSize !== false;
     const controllerSortShape = selectedItem?.config?.defaultDropSortShape !== false;
+    const showTeachPointsOverlay = (selectedItem?.config?.showTeachPoints ?? selectedItem?.config?.showTeachZones ?? true) !== false;
+    const showArmRangeOverlay = (selectedItem?.config?.showArmRange ?? selectedItem?.config?.showTeachZones ?? true) !== false;
+    const showPathOverlay = (selectedItem?.config?.showPathPreview ?? true) !== false;
+    const cobotCollisionEnabled = (selectedItem?.config?.cobotCollisionEnabled ?? true) !== false;
+    const cobotAutoIdle = selectedItem?.config?.autoOrganize === true;
+    const activeProgramStepIndex = selectedItem?.config?.uiActiveProgramStepIndex;
+    const toggleCobotSection = (section: 'transform' | 'vision' | 'controller') => {
+        setOpenCobotSection(prev => (prev === section ? null : section));
+    };
+
+    const defaultCobotArmTarget = (item: PlacedItem): [number, number, number] => [
+        item.position[0],
+        item.position[1] + 2.2,
+        item.position[2],
+    ];
+
+    const cobotArmTarget = selectedItem?.type === 'cobot'
+        ? (selectedItem.config?.cobotManualTarget || selectedItem.config?.cobotHomeTarget || defaultCobotArmTarget(selectedItem))
+        : null;
+
+    const setCobotManualTarget = (target: [number, number, number], manualControl = true) => {
+        if (!selectedItem || selectedItem.type !== 'cobot') return;
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                ...selectedItem.config,
+                cobotManualTarget: target,
+                cobotManualControl: manualControl,
+                isStopped: false,
+            }
+        });
+    };
+
+    const nudgeCobotArmTarget = (axis: 0 | 1 | 2, delta: number) => {
+        if (!selectedItem || selectedItem.type !== 'cobot' || !cobotArmTarget) return;
+        const next = [...cobotArmTarget] as [number, number, number];
+        next[axis] = axis === 1
+            ? Math.max(0.08, Math.min(3.6, next[axis] + delta))
+            : Math.max(selectedItem.position[axis === 0 ? 0 : 2] - 3.2, Math.min(selectedItem.position[axis === 0 ? 0 : 2] + 3.2, next[axis] + delta));
+        setCobotManualTarget(next);
+    };
+
+    const saveCobotHomeTarget = () => {
+        if (!selectedItem || selectedItem.type !== 'cobot' || !cobotArmTarget) return;
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                ...selectedItem.config,
+                cobotHomeTarget: cobotArmTarget,
+                cobotManualTarget: cobotArmTarget,
+                cobotManualControl: true,
+                isStopped: false,
+            }
+        });
+    };
+
+    const goCobotHomeTarget = () => {
+        if (!selectedItem || selectedItem.type !== 'cobot') return;
+        setCobotManualTarget(selectedItem.config?.cobotHomeTarget || defaultCobotArmTarget(selectedItem));
+    };
 
     const unlockSelectedCobot = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
@@ -831,9 +964,9 @@ export const UI: React.FC = () => {
     };
 
     return (
-        <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-2 sm:p-6">
+        <div className={rootOverlayClass}>
             {/* Top Bar */}
-            <div className="flex justify-between items-start">
+            <div className="flex justify-between items-start gap-2">
                 <div className="flex flex-col gap-4 pointer-events-auto">
                     <div>
                         <h1 className="text-2xl sm:text-4xl font-display font-black text-blue-400 tracking-tight drop-shadow-md">
@@ -843,8 +976,8 @@ export const UI: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="flex flex-col gap-2 pointer-events-auto items-end">
-                    <label className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 py-1.5 sm:px-4 sm:py-2 shadow-xl border border-gray-700 flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-800 transition-colors">
+                <div className="relative flex flex-col gap-2 pointer-events-auto items-end">
+                    <label className={`${chromeCardClass} px-3 py-1.5 sm:px-4 sm:py-2 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-800 transition-colors`}>
                         <span className="text-[10px] font-bold text-gray-400 hidden sm:inline">SNAP 0.5 GRID</span>
                         <span className="text-[10px] font-bold text-gray-400 sm:hidden">SNAP</span>
                         <input
@@ -854,18 +987,11 @@ export const UI: React.FC = () => {
                             className="rounded border-gray-600 bg-gray-800"
                         />
                     </label>
-                    <button
-                        onClick={() => setFlatPanels(v => !v)}
-                        className={`rounded-xl px-3 py-1.5 sm:px-4 sm:py-2 border text-[10px] font-bold transition-colors ${flatPanels ? 'bg-cyan-900/30 border-cyan-600/40 text-cyan-200' : 'bg-gray-900/90 border-gray-700 text-gray-300 hover:bg-gray-800'}`}
-                        title="Toggle flat panels"
-                    >
-                        {flatPanels ? 'FLAT PANELS' : 'DEPTH PANELS'}
-                    </button>
-                    <div className="flex gap-1.5 sm:gap-2">
-                        <button onClick={() => setShowHelpModal(true)} className="bg-gray-900/90 backdrop-blur-md rounded-xl w-10 sm:w-12 shadow-xl border border-gray-700 flex items-center justify-center hover:bg-gray-800 transition-colors text-blue-400" title="Help / Instructions">
+                    <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2 max-w-[calc(100vw-16px)]">
+                        <button onClick={() => setShowHelpModal(true)} className={`${chromeCardClass} w-10 sm:w-12 flex items-center justify-center hover:bg-slate-800 transition-colors text-blue-400`} title="Help / Instructions">
                             <HelpCircle size={20} className="sm:w-6 sm:h-6" />
                         </button>
-                        <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
+                        <div className={`${chromeCardClass} px-3 sm:px-6 py-1.5 sm:py-3 flex items-center gap-2 sm:gap-4`}>
                         <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
                             â˜…
                         </div>
@@ -874,7 +1000,7 @@ export const UI: React.FC = () => {
                             <div className="text-lg sm:text-2xl font-black text-white leading-none">{scoreValue}</div>
                         </div>
                     </div>
-                    <div className="bg-gray-900/90 backdrop-blur-md rounded-xl px-3 sm:px-6 py-1.5 sm:py-3 shadow-xl border border-gray-700 flex items-center gap-2 sm:gap-4">
+                    <div className={`${chromeCardClass} px-3 sm:px-6 py-1.5 sm:py-3 flex items-center gap-2 sm:gap-4`}>
                         <div className="bg-blue-500/20 text-blue-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
                             $
                         </div>
@@ -885,8 +1011,8 @@ export const UI: React.FC = () => {
                     </div>
                 </div>
                     <div
-                        className={`w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 overflow-hidden ${panelFrameClass}`}
-                        style={{ transform: `translate(${masterPanelPos.x}px, ${masterPanelPos.y}px)` }}
+                        className={`absolute right-0 top-[calc(100%+8px)] sm:top-[calc(100%+10px)] z-30 w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 overflow-hidden ${panelFrameClass}`}
+                        style={canDragPanels ? { transform: `translate(${masterPanelPos.x}px, ${masterPanelPos.y}px)` } : undefined}
                     >
                         <button
                             onClick={() => setShowMasterPanel(v => !v)}
@@ -894,7 +1020,7 @@ export const UI: React.FC = () => {
                             onPointerMove={(e) => movePanelDrag('master', e)}
                             onPointerUp={(e) => endPanelDrag('master', e)}
                             onPointerCancel={(e) => endPanelDrag('master', e)}
-                            className="w-full flex items-center justify-between px-3 py-2 bg-cyan-900/25 hover:bg-cyan-800/30 transition-colors"
+                            className={`w-full flex items-center justify-between px-3 py-2 bg-cyan-900/25 hover:bg-cyan-800/30 transition-colors ${canDragPanels ? 'cursor-grab active:cursor-grabbing' : ''}`}
                         >
                             <div className="flex items-center gap-2 text-cyan-100">
                                 {canDragPanels && (
@@ -912,7 +1038,7 @@ export const UI: React.FC = () => {
                             {showMasterPanel ? <ChevronDown size={14} className="text-cyan-200" /> : <ChevronRight size={14} className="text-cyan-200" />}
                         </button>
                         {showMasterPanel && (
-                            <div className="p-2 sm:p-3 flex flex-col gap-2">
+                            <div className={masterPanelBodyClass}>
                                 <div className="grid grid-cols-2 gap-2 text-[10px]">
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">RUN STATE</div>
@@ -930,7 +1056,7 @@ export const UI: React.FC = () => {
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">SORTED / DROPPED</div>
-                                        <div className="font-black text-emerald-300">{scoreValue}</div>
+                                        <div className="font-black text-emerald-300">{droppedEstimate}</div>
                                     </div>
                                     <div className="rounded border border-gray-700 bg-gray-900/50 px-2 py-1.5">
                                         <div className="text-gray-500 font-bold">STOCKED</div>
@@ -954,8 +1080,20 @@ export const UI: React.FC = () => {
 
                                 <div className="rounded border border-cyan-700/40 bg-cyan-950/20 px-2 py-2 flex flex-col gap-2">
                                     <div className="flex items-center justify-between">
-                                        <span className="text-[10px] font-bold text-cyan-100">CAMERAS ({cameras.length})</span>
-                                        <span className="text-[10px] text-cyan-300">{camerasWithFeed} live</span>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[10px] font-bold text-cyan-100">CAMERAS ({displayedMasterCameras.length}/{cameras.length})</span>
+                                            <span className="text-[10px] text-cyan-300">{camerasWithFeed} live</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleAddMasterCamera}
+                                            disabled={hiddenMasterCameras.length === 0}
+                                            className="h-6 w-6 rounded border border-cyan-500/40 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center"
+                                            title="Add camera feed"
+                                            data-no-drag="true"
+                                        >
+                                            <Plus size={13} />
+                                        </button>
                                     </div>
                                     <div className="grid grid-cols-2 gap-2">
                                         <label className="flex flex-col gap-1 rounded border border-gray-700 bg-gray-900/40 px-2 py-1.5">
@@ -1002,63 +1140,98 @@ export const UI: React.FC = () => {
                                             GRAPH
                                         </button>
                                     </div>
-                                    <select
-                                        value={masterCamera?.id || ''}
-                                        onChange={(e) => setMasterCameraId(e.target.value || null)}
-                                        className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
-                                    >
-                                        {cameras.length === 0 ? (
-                                            <option value="">No cameras available</option>
-                                        ) : cameras.map(cam => (
-                                            <option key={cam.id} value={cam.id}>{cam.name || cam.id}</option>
-                                        ))}
-                                    </select>
-                                    {masterCamera && (
-                                        <>
-                                            {cameraPreviewMode === 'video' ? (
-                                                <div className="h-28 rounded bg-gray-950/80 border border-gray-800 p-1 relative overflow-hidden">
-                                                    {simState.cameraFrames[masterCamera.id] ? (
-                                                        <img
-                                                            src={simState.cameraFrames[masterCamera.id]}
-                                                            alt="Master camera feed"
-                                                            className="w-full h-full object-cover rounded"
-                                                        />
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-0.5">
+                                        {displayedMasterCameras.map(cam => {
+                                            const detections = cameraDetectionsFor(cam.id);
+                                            const frame = simState.cameraFrames[cam.id];
+                                            const active = masterCameraId === cam.id || selectedItemId === cam.id;
+                                            return (
+                                                <div
+                                                    key={cam.id}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => {
+                                                        setMasterCameraId(cam.id);
+                                                        setSelectedItemId(cam.id);
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' || e.key === ' ') {
+                                                            setMasterCameraId(cam.id);
+                                                            setSelectedItemId(cam.id);
+                                                        }
+                                                    }}
+                                                    className={`group relative rounded border p-1 text-left bg-gray-950/70 hover:border-cyan-400/70 transition-colors ${active ? 'border-cyan-400/80 ring-1 ring-cyan-400/40' : 'border-gray-800'}`}
+                                                    data-no-drag="true"
+                                                >
+                                                    <div className="flex items-center justify-between gap-2 px-1 pb-1">
+                                                        <span className="truncate text-[10px] font-bold text-cyan-100">{cam.name || cam.id}</span>
+                                                        <span className={`h-1.5 w-1.5 rounded-full ${frame ? 'bg-emerald-300' : 'bg-gray-600'}`} />
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            hideMasterCameraFeed(cam.id);
+                                                        }}
+                                                        className="absolute right-1.5 top-6 z-10 h-6 w-6 rounded bg-red-500/80 text-white opacity-80 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-red-500 flex items-center justify-center transition-opacity"
+                                                        title="Hide camera feed"
+                                                        data-no-drag="true"
+                                                    >
+                                                        <Trash2 size={12} />
+                                                    </button>
+                                                    {cameraPreviewMode === 'video' ? (
+                                                        <div className="h-24 rounded bg-gray-950 border border-gray-800 overflow-hidden relative">
+                                                            {frame ? (
+                                                                <img
+                                                                    src={frame}
+                                                                    alt={`${cam.name || cam.id} feed`}
+                                                                    className="w-full h-full object-cover"
+                                                                />
+                                                            ) : (
+                                                                <div className="absolute inset-0 flex items-center justify-center text-[9px] text-gray-600">
+                                                                    Waiting for video...
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     ) : (
-                                                        <div className="absolute inset-0 flex items-center justify-center text-[10px] text-gray-600">
-                                                            Waiting for camera video...
+                                                        <div className="h-24 rounded bg-gray-950 border border-gray-800 p-2 flex items-end gap-1.5 overflow-hidden">
+                                                            {detections.slice(0, 8).map(det => (
+                                                                <span
+                                                                    key={`master_${cam.id}_${det.itemId}`}
+                                                                    className="w-4 rounded-sm border border-black/20"
+                                                                    style={{
+                                                                        height: det.size === 'large' ? '2rem' : det.size === 'medium' ? '1.55rem' : '1.15rem',
+                                                                        backgroundColor: det.color
+                                                                    }}
+                                                                />
+                                                            ))}
+                                                            {detections.length === 0 && (
+                                                                <span className="text-[9px] text-gray-600">No detections</span>
+                                                            )}
                                                         </div>
                                                     )}
-                                                </div>
-                                            ) : (
-                                                <div className="h-24 rounded bg-gray-950/70 border border-gray-800 p-2 flex items-end gap-1.5">
-                                                    {masterCameraDetections.slice(0, 10).map(det => (
-                                                        <span
-                                                            key={`master_${det.itemId}`}
-                                                            className="w-5 rounded-sm border border-black/20"
-                                                            style={{
-                                                                height: det.size === 'large' ? '2rem' : det.size === 'medium' ? '1.6rem' : '1.2rem',
-                                                                backgroundColor: det.color
-                                                            }}
-                                                        />
-                                                    ))}
-                                                    {masterCameraDetections.length === 0 && (
-                                                        <span className="text-[10px] text-gray-600">No parts currently in view</span>
-                                                    )}
-                                                </div>
-                                            )}
-                                            <div className="rounded border border-gray-800 bg-gray-950/50 max-h-24 overflow-auto">
-                                                {masterCameraDetections.slice(0, 6).map(det => (
-                                                    <div key={`master_row_${det.itemId}`} className="px-2 py-1 text-[10px] text-gray-300 border-b border-gray-900/80 last:border-b-0 flex justify-between gap-2">
-                                                        <span className="truncate">{det.templateName || det.templateId || det.itemId}</span>
-                                                        <span className="text-gray-400">{Math.round((Number.isFinite(det.confidence) ? det.confidence : 0) * 100)}%</span>
+                                                    <div className="mt-1 rounded bg-gray-900/80 px-1.5 py-1 text-[9px] text-gray-400 flex justify-between gap-2">
+                                                        <span className="truncate">
+                                                            {detections[0]?.templateName || detections[0]?.templateId || detections[0]?.itemId || 'No parts'}
+                                                        </span>
+                                                        <span>{detections[0] ? `${Math.round((Number.isFinite(detections[0].confidence) ? detections[0].confidence : 0) * 100)}%` : '--'}</span>
                                                     </div>
-                                                ))}
-                                                {masterCameraDetections.length === 0 && (
-                                                    <div className="px-2 py-2 text-[10px] text-gray-600">Detection list is empty.</div>
-                                                )}
-                                            </div>
-                                        </>
-                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                        {displayedMasterCameras.length === 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={handleAddMasterCamera}
+                                                disabled={hiddenMasterCameras.length === 0}
+                                                className="h-24 rounded border border-dashed border-cyan-600/50 bg-cyan-950/20 text-cyan-200 text-[10px] font-bold flex items-center justify-center gap-2 disabled:opacity-40"
+                                                data-no-drag="true"
+                                            >
+                                                <Plus size={14} />
+                                                {hiddenMasterCameras.length > 0 ? 'ADD CAMERA FEED' : 'NO CAMERA FEEDS'}
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
                                 {looseParts > 0 && (
                                     <div className="rounded border border-amber-500/35 bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-200">
@@ -1072,7 +1245,7 @@ export const UI: React.FC = () => {
             </div>
 
             {/* Bottom Area */}
-            <div className="flex flex-col items-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-full">
+            <div className={`flex flex-col items-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-full ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+4px)]' : ''}`}>
                 
                 {draftPlacement ? (
                     <div className={`${panelFrameClass} rounded-xl p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}>
@@ -1102,7 +1275,7 @@ export const UI: React.FC = () => {
                 ) : selectedItem ? (
                     /* SELECTION PANEL */
                     <div
-                        className={`${panelFrameClass} rounded-xl border p-2 flex flex-col gap-1.5 w-[min(540px,calc(100vw-16px))] max-h-[72vh] overflow-y-auto animate-fade-in ${statusTone.panel}`}
+                        className={`${panelFrameClass} rounded-xl border ${selectedItem.type === 'cobot' ? 'p-1.5' : 'p-2'} flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'w-[min(520px,calc(100vw-10px))]' : 'w-[min(560px,calc(100vw-12px))]'} ${selectionPanelMaxHClass} overflow-y-auto overscroll-contain animate-fade-in ${statusTone.panel}`}
                         style={{ transform: `translate(${selectionPanelPos.x}px, ${selectionPanelPos.y}px)` }}
                     >
                         <div
@@ -1155,13 +1328,35 @@ export const UI: React.FC = () => {
                             </div>
                             <div className="flex items-center gap-2">
                                 {selectedItem.type === 'cobot' && (
-                                    <button 
-                                        onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, isStopped: !selectedItem.config?.isStopped } })}
-                                        className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
-                                        title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
-                                    >
-                                        {selectedItem.config?.isStopped ? <Play size={16} fill="currentColor" /> : <Square size={16} fill="currentColor" />}
-                                    </button>
+                                    <>
+                                        <button
+                                            onClick={() => updatePlacedItem(selectedItem.id, {
+                                                config: {
+                                                    ...selectedItem.config,
+                                                    cobotCollisionEnabled: !cobotCollisionEnabled,
+                                                    collisionStopped: !cobotCollisionEnabled ? selectedItem.config?.collisionStopped : false
+                                                }
+                                            })}
+                                            className={`inline-flex items-center justify-center rounded-md w-7 h-6 border transition-colors ${cobotCollisionEnabled ? 'border-cyan-400/45 bg-cyan-500/15 text-cyan-100' : 'border-gray-700 bg-gray-900/55 text-gray-400 hover:text-gray-200'}`}
+                                            title={cobotCollisionEnabled ? 'Disable collision safety' : 'Enable collision safety'}
+                                        >
+                                            <Target size={11} />
+                                        </button>
+                                        <button
+                                            onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, autoOrganize: !cobotAutoIdle } })}
+                                            className={`inline-flex items-center justify-center rounded-md w-7 h-6 border transition-colors ${cobotAutoIdle ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-100' : 'border-gray-700 bg-gray-900/55 text-gray-400 hover:text-gray-200'}`}
+                                            title={cobotAutoIdle ? 'Disable auto idle organize' : 'Enable auto idle organize'}
+                                        >
+                                            <Cpu size={11} />
+                                        </button>
+                                        <button 
+                                            onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, isStopped: !selectedItem.config?.isStopped } })}
+                                            className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
+                                            title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
+                                        >
+                                            {selectedItem.config?.isStopped ? <Play size={16} fill="currentColor" /> : <Square size={16} fill="currentColor" />}
+                                        </button>
+                                    </>
                                 )}
                                 <button onClick={() => setSelectedItemId(null)} className="text-gray-400 hover:text-white">
                                     <X size={20} />
@@ -1304,20 +1499,99 @@ export const UI: React.FC = () => {
                                                                 </button>
                                                             </div>
                                                         )}
-                                                        <div className="rounded-lg overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-gray-900/50">
+                                                        <div className="rounded-md overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-gray-900/55">
                                                             <button
-                                                                onClick={() => setShowTransforms(!showTransforms)}
-                                                                className={`w-full flex items-center justify-between px-2 py-1.5 text-left hover:bg-fuchsia-900/20 transition-colors ${showTransforms ? 'bg-fuchsia-900/20' : ''}`}
+                                                                onClick={() => toggleCobotSection('transform')}
+                                                                className={`w-full flex items-center justify-between px-1.5 py-1 text-left hover:bg-fuchsia-900/20 transition-colors ${showTransforms ? 'bg-fuchsia-900/20' : ''}`}
                                                             >
                                                                 <div className="flex items-center gap-2">
-                                                                    <SlidersHorizontal size={14} className="text-fuchsia-300" />
+                                                                    <SlidersHorizontal size={12} className="text-fuchsia-300" />
                                                                     <span className="text-[10px] text-fuchsia-100 font-bold">TRANSFORM & KINEMATICS</span>
                                                                 </div>
-                                                                {showTransforms ? <ChevronDown size={14} className="text-fuchsia-200" /> : <ChevronRight size={14} className="text-fuchsia-200" />}
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span
+                                                                        onClick={(e) => {
+                                                                            e.preventDefault();
+                                                                            e.stopPropagation();
+                                                                            setCobotOverlay({ showArmRange: !showArmRangeOverlay });
+                                                                        }}
+                                                                        className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showArmRangeOverlay ? 'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
+                                                                        title={showArmRangeOverlay ? 'Hide range overlay' : 'Show range overlay'}
+                                                                    >
+                                                                        <Target size={9} />
+                                                                        RANGE
+                                                                    </span>
+                                                                    {showTransforms ? <ChevronDown size={12} className="text-fuchsia-200" /> : <ChevronRight size={12} className="text-fuchsia-200" />}
+                                                                </div>
                                                             </button>
                                                             {showTransforms && (
-                                                                <div className="px-2 pb-2 pt-2 flex flex-col gap-1.5">
+                                                                <div className="px-1.5 pb-1.5 pt-1.5 flex flex-col gap-1.5">
                                                                     <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+
+                                                                    {cobotArmTarget && (
+                                                                        <div className="rounded-md border border-sky-500/25 bg-sky-950/20 p-1.5 flex flex-col gap-1.5">
+                                                                            <div className="flex items-center justify-between gap-2">
+                                                                                <div className="flex items-center gap-1.5">
+                                                                                    <Move size={11} className="text-sky-200" />
+                                                                                    <span className="text-[9px] font-bold text-sky-100">ARM POSE</span>
+                                                                                </div>
+                                                                                <div className="flex items-center gap-1">
+                                                                                    <button
+                                                                                        onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotManualControl: !selectedItem.config?.cobotManualControl, cobotManualTarget: cobotArmTarget, isStopped: false } })}
+                                                                                        className={`h-5 px-1.5 rounded border text-[8px] font-bold ${selectedItem.config?.cobotManualControl ? 'border-sky-300/60 bg-sky-500/20 text-sky-100' : 'border-gray-700 bg-gray-900/60 text-gray-400'}`}
+                                                                                        title="Enable manual arm jog target"
+                                                                                    >
+                                                                                        JOG
+                                                                                    </button>
+                                                                                    <button
+                                                                                        onClick={goCobotHomeTarget}
+                                                                                        className="h-5 px-1.5 rounded border border-gray-700 bg-gray-900/60 text-gray-200 hover:text-white inline-flex items-center gap-1 text-[8px] font-bold"
+                                                                                        title="Move arm to saved home pose"
+                                                                                    >
+                                                                                        <Home size={9} /> HOME
+                                                                                    </button>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="grid grid-cols-3 gap-1">
+                                                                                {(['X', 'Y', 'Z'] as const).map((axis, axisIdx) => (
+                                                                                    <div key={axis} className="rounded bg-gray-950/45 border border-gray-800 px-1 py-1">
+                                                                                        <div className="flex items-center justify-between mb-1">
+                                                                                            <span className="text-[8px] font-bold text-gray-500">{axis}</span>
+                                                                                            <span className="text-[9px] font-mono font-bold text-sky-200">{cobotArmTarget[axisIdx].toFixed(2)}</span>
+                                                                                        </div>
+                                                                                        <div className="grid grid-cols-2 gap-1">
+                                                                                            <button
+                                                                                                onClick={() => nudgeCobotArmTarget(axisIdx as 0 | 1 | 2, axisIdx === 1 ? -0.05 : -0.1)}
+                                                                                                className="h-5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold"
+                                                                                            >
+                                                                                                -
+                                                                                            </button>
+                                                                                            <button
+                                                                                                onClick={() => nudgeCobotArmTarget(axisIdx as 0 | 1 | 2, axisIdx === 1 ? 0.05 : 0.1)}
+                                                                                                className="h-5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold"
+                                                                                            >
+                                                                                                +
+                                                                                            </button>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
+                                                                            <div className="grid grid-cols-2 gap-1">
+                                                                                <button
+                                                                                    onClick={() => setCobotManualTarget(defaultCobotArmTarget(selectedItem))}
+                                                                                    className="h-6 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[9px] font-bold"
+                                                                                >
+                                                                                    CENTER ARM
+                                                                                </button>
+                                                                                <button
+                                                                                    onClick={saveCobotHomeTarget}
+                                                                                    className="h-6 rounded bg-sky-700/60 hover:bg-sky-600 text-sky-50 text-[9px] font-bold"
+                                                                                >
+                                                                                    SAVE AS HOME
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
 
                                                                     <div className="flex gap-2 w-full mt-1">
                                                                         <div className="flex flex-col gap-0.5 w-1/2">
@@ -1343,19 +1617,33 @@ export const UI: React.FC = () => {
 
                                 {selectedItem.type === 'cobot' && (
                                     <>
-                                        <div className="bg-cyan-950/25 rounded-lg border border-cyan-500/35 overflow-hidden">
+                                        <div className="bg-cyan-950/25 rounded-md border border-cyan-500/35 overflow-hidden">
                                             <button
-                                                onClick={() => setShowVisionConfig(v => !v)}
-                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left bg-cyan-900/20 hover:bg-cyan-800/30 transition-colors"
+                                                onClick={() => toggleCobotSection('vision')}
+                                                className="w-full flex items-center justify-between px-1.5 py-1 text-left bg-cyan-900/20 hover:bg-cyan-800/30 transition-colors"
                                             >
                                                 <div className="flex items-center gap-2">
-                                                    <Camera size={14} className="text-cyan-200" />
+                                                    <Camera size={12} className="text-cyan-200" />
                                                     <span className="text-[10px] text-cyan-100 font-bold">VISION & CAMERA LINKS</span>
                                                 </div>
-                                                {showVisionConfig ? <ChevronDown size={14} className="text-cyan-200" /> : <ChevronRight size={14} className="text-cyan-200" />}
+                                                <div className="flex items-center gap-1.5">
+                                                    <span
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            setCobotOverlay({ showPathPreview: !showPathOverlay });
+                                                        }}
+                                                        className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showPathOverlay ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
+                                                        title={showPathOverlay ? 'Hide path overlay' : 'Show path overlay'}
+                                                    >
+                                                        <Link2 size={9} />
+                                                        PATH
+                                                    </span>
+                                                    {showVisionConfig ? <ChevronDown size={12} className="text-cyan-200" /> : <ChevronRight size={12} className="text-cyan-200" />}
+                                                </div>
                                             </button>
                                             {showVisionConfig && (
-                                                <div className="px-2 pb-2 flex flex-col gap-2 border-t border-cyan-500/30">
+                                                <div className="px-1.5 pb-1.5 flex flex-col gap-1.5 border-t border-cyan-500/30">
                                                     <div className="pt-2 flex flex-col gap-1">
                                                         <span className="text-[9px] font-bold text-gray-500">LINKED CAMERAS</span>
                                                         <div className="grid grid-cols-2 gap-1">
@@ -1435,30 +1723,85 @@ export const UI: React.FC = () => {
                                         </div>
                                         
                                         {/* Programmability UI */}
-                                        <div className="bg-emerald-950/25 rounded-lg border border-emerald-500/35 overflow-hidden">
+                                        <div className="bg-emerald-950/25 rounded-md border border-emerald-500/35 overflow-hidden">
                                             <button
-                                                onClick={() => setShowController(v => !v)}
-                                                className="w-full flex items-center justify-between px-2 py-1.5 text-left bg-emerald-900/20 hover:bg-emerald-800/30 transition-colors"
+                                                onClick={() => toggleCobotSection('controller')}
+                                                className="w-full flex items-center justify-between px-1.5 py-1 text-left bg-emerald-900/20 hover:bg-emerald-800/30 transition-colors"
                                             >
                                                 <div className="flex items-center gap-2">
-                                                    <Cpu size={14} className="text-emerald-200" />
+                                                    <Cpu size={12} className="text-emerald-200" />
                                                     <span className="text-[10px] text-emerald-100 font-bold">ROBOT CONTROLLER</span>
                                                 </div>
-                                                {showController ? <ChevronDown size={14} className="text-emerald-200" /> : <ChevronRight size={14} className="text-emerald-200" />}
+                                                <div className="flex items-center gap-1.5">
+                                                    <span
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            setCobotOverlay({ showTeachPoints: !showTeachPointsOverlay });
+                                                        }}
+                                                        className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showTeachPointsOverlay ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
+                                                        title={showTeachPointsOverlay ? 'Hide taught points overlay' : 'Show taught points overlay'}
+                                                    >
+                                                        <List size={9} />
+                                                        POINTS
+                                                    </span>
+                                                    {showController ? <ChevronDown size={12} className="text-emerald-200" /> : <ChevronRight size={12} className="text-emerald-200" />}
+                                                </div>
                                             </button>
                                             {showController && (
-                                                <div className="px-2 pb-2 border-t border-emerald-500/30 flex flex-col gap-1.5">
+                                                <div className="px-1.5 pb-1.5 border-t border-emerald-500/30 flex flex-col gap-1.5">
                                                     <div className="pt-2 flex items-center justify-between gap-2">
                                                         <div className="flex flex-wrap items-center gap-1">
-                                                            {PROGRAM_ACTIONS.map(action => (
-                                                                <button
-                                                                    key={action}
-                                                                    onClick={() => addProgramStep(action)}
-                                                                    className="px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-[9px] font-bold uppercase text-gray-200"
-                                                                >
-                                                                    + {action}
-                                                                </button>
-                                                            ))}
+                                                            <button
+                                                                onClick={() => addProgramStep('move')}
+                                                                className="w-6 h-5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 inline-flex items-center justify-center"
+                                                                title="Add move step"
+                                                            >
+                                                                <Move size={10} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => setTeachAction(teachAction === 'pick' ? null : 'pick')}
+                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${
+                                                                    teachAction === 'pick'
+                                                                        ? 'bg-cyan-500 text-white animate-pulse'
+                                                                        : 'bg-cyan-700/45 hover:bg-cyan-600/60 text-cyan-100'
+                                                                }`}
+                                                                title={teachAction === 'pick' ? 'Cancel teach pick' : 'Teach pick point'}
+                                                            >
+                                                                <Target size={10} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => setTeachAction(teachAction === 'drop' ? null : 'drop')}
+                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${
+                                                                    teachAction === 'drop'
+                                                                        ? 'bg-red-500 text-white animate-pulse'
+                                                                        : 'bg-red-700/45 hover:bg-red-600/60 text-red-100'
+                                                                }`}
+                                                                title={teachAction === 'drop' ? 'Cancel teach drop' : 'Teach drop point'}
+                                                            >
+                                                                <Target size={10} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => addProgramStep('pick')}
+                                                                className="w-6 h-5 rounded bg-cyan-700/50 hover:bg-cyan-600/60 text-cyan-100 inline-flex items-center justify-center"
+                                                                title="Add pick step"
+                                                            >
+                                                                <Download size={10} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => addProgramStep('drop')}
+                                                                className="w-6 h-5 rounded bg-emerald-700/50 hover:bg-emerald-600/60 text-emerald-100 inline-flex items-center justify-center"
+                                                                title="Add drop step"
+                                                            >
+                                                                <Upload size={10} />
+                                                            </button>
+                                                            <button
+                                                                onClick={() => addProgramStep('wait')}
+                                                                className="w-6 h-5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200 inline-flex items-center justify-center"
+                                                                title="Add wait step"
+                                                            >
+                                                                <Pause size={10} />
+                                                            </button>
                                                             <div className="ml-1 pl-2 border-l border-emerald-600/40 flex items-center gap-2">
                                                                 <span className="text-[9px] font-bold text-emerald-200">SORT</span>
                                                                 <label className="flex items-center gap-1 cursor-pointer">
@@ -1495,7 +1838,15 @@ export const UI: React.FC = () => {
 
                                                     <div className="flex flex-col gap-1 mb-1 max-h-[220px] overflow-y-auto pr-1">
                                                         {selectedItem.config?.program?.map((step, idx) => (
-                                                            <div key={idx} className="rounded border border-gray-700 bg-gray-900/50 p-1 flex flex-col gap-1">
+                                                            <div
+                                                                key={idx}
+                                                                onClick={(e) => {
+                                                                    const target = e.target as HTMLElement;
+                                                                    if (target.closest('button, input, select, textarea, a')) return;
+                                                                    setActiveProgramStepIndex(idx);
+                                                                }}
+                                                                className={`rounded border p-1 flex flex-col gap-1 cursor-pointer ${activeProgramStepIndex === idx ? 'border-emerald-400/70 bg-emerald-500/10' : 'border-gray-700 bg-gray-900/50'}`}
+                                                            >
                                                                 <div className="flex items-center gap-1">
                                                                     <span className="text-[9px] font-mono text-gray-500 w-4">{idx + 1}</span>
                                                                     <select
@@ -1519,9 +1870,9 @@ export const UI: React.FC = () => {
                                                                     >
                                                                         {PROGRAM_ACTIONS.map(action => <option key={action} value={action}>{action.toUpperCase()}</option>)}
                                                                     </select>
-                                                                    <button onClick={() => moveProgramStep(idx, -1)} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowUp size={12} /></button>
-                                                                    <button onClick={() => moveProgramStep(idx, 1)} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowDown size={12} /></button>
-                                                                    <button onClick={() => removeProgramStep(idx)} className="ml-auto p-0.5 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"><Trash2 size={12} /></button>
+                                                                    <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(idx); moveProgramStep(idx, -1); }} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowUp size={12} /></button>
+                                                                    <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(idx); moveProgramStep(idx, 1); }} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowDown size={12} /></button>
+                                                                    <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(null); removeProgramStep(idx); }} className="ml-auto p-0.5 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"><Trash2 size={12} /></button>
                                                                 </div>
                                                                 {step.action === 'wait' ? (
                                                                     <div className="px-1 mt-1">
@@ -1556,22 +1907,6 @@ export const UI: React.FC = () => {
                                                         )}
                                                     </div>
 
-                                                    <div className="flex gap-2">
-                                                        <button 
-                                                            onClick={() => setTeachAction(teachAction === 'pick' ? null : 'pick')}
-                                                            className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-xs font-bold transition-colors
-                                                                ${teachAction === 'pick' ? 'bg-emerald-500 text-white animate-pulse' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                                                        >
-                                                            <Plus size={14} /> TEACH PICK
-                                                        </button>
-                                                        <button 
-                                                            onClick={() => setTeachAction(teachAction === 'drop' ? null : 'drop')}
-                                                            className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-xs font-bold transition-colors
-                                                                ${teachAction === 'drop' ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                                                        >
-                                                            <Plus size={14} /> TEACH DROP
-                                                        </button>
-                                                    </div>
                                                     {teachAction && (
                                                         <div className="text-[10px] text-yellow-400 text-center mt-1">
                                                             Click on the grid or a station to append a taught {teachAction.toUpperCase()} step.
@@ -1732,23 +2067,23 @@ export const UI: React.FC = () => {
                             </div>
 
                             {/* Global Actions */}
-                            <div className="flex flex-col gap-1.5 min-w-[112px]">
+                            <div className="flex flex-col gap-1.5 min-w-[106px]">
                                 <div className="grid grid-cols-3 gap-1.5">
                                     <button 
                                         onClick={() => setMoveModeItemId(moveModeItemId === selectedItem.id ? null : selectedItem.id)}
-                                        className={`flex items-center justify-center gap-1 px-2 h-9 rounded-lg text-[10px] font-bold transition-colors ${moveModeItemId === selectedItem.id ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]' : 'bg-blue-500/20 hover:bg-blue-500/40 text-blue-400'}`}
+                                        className={`flex items-center justify-center gap-1 px-2 h-8 rounded-md text-[9px] font-bold transition-colors ${moveModeItemId === selectedItem.id ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]' : 'bg-blue-500/20 hover:bg-blue-500/40 text-blue-400'}`}
                                     >
                                         <Move size={13} /> {moveModeItemId === selectedItem.id ? 'MOVING...' : 'MOVE'}
                                     </button>
                                     <button 
                                         onClick={handleRotateSelected}
-                                        className="flex items-center justify-center gap-1 px-2 h-9 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-[10px] font-bold transition-colors"
+                                        className="flex items-center justify-center gap-1 px-2 h-8 bg-gray-800 hover:bg-gray-700 text-white rounded-md text-[9px] font-bold transition-colors"
                                     >
                                         <RotateCw size={13} /> ROT
                                     </button>
                                     <button 
                                         onClick={handleSellSelected}
-                                        className="flex items-center justify-center gap-1 px-2 h-9 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-lg text-[10px] font-bold transition-colors"
+                                        className="flex items-center justify-center gap-1 px-2 h-8 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-md text-[9px] font-bold transition-colors"
                                     >
                                         <Trash2 size={13} /> SELL
                                     </button>
@@ -1762,52 +2097,6 @@ export const UI: React.FC = () => {
                                         >
                                             <Download size={11} /> EXPORT LOG
                                         </button>
-                                        <label className="flex items-center justify-between gap-2">
-                                            <span className="text-[9px] font-bold text-gray-400">COLLISION</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={(selectedItem.config?.cobotCollisionEnabled ?? true) !== false}
-                                                onChange={(e) => updatePlacedItem(selectedItem.id, {
-                                                    config: {
-                                                        ...selectedItem.config,
-                                                        cobotCollisionEnabled: e.target.checked,
-                                                        collisionStopped: e.target.checked ? selectedItem.config?.collisionStopped : false
-                                                    }
-                                                })}
-                                            />
-                                        </label>
-                                        <label className="flex items-center justify-between gap-2">
-                                            <span className="text-[9px] font-bold text-gray-400">IDLE</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={selectedItem.config?.autoOrganize === true}
-                                                onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, autoOrganize: e.target.checked } })}
-                                            />
-                                        </label>
-                                        <label className="flex items-center justify-between gap-2">
-                                            <span className="text-[9px] font-bold text-gray-400">POINTS</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={(selectedItem.config?.showTeachPoints ?? selectedItem.config?.showTeachZones ?? true) !== false}
-                                                onChange={(e) => setCobotOverlay({ showTeachPoints: e.target.checked })}
-                                            />
-                                        </label>
-                                        <label className="flex items-center justify-between gap-2">
-                                            <span className="text-[9px] font-bold text-gray-400">RANGE</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={(selectedItem.config?.showArmRange ?? selectedItem.config?.showTeachZones ?? true) !== false}
-                                                onChange={(e) => setCobotOverlay({ showArmRange: e.target.checked })}
-                                            />
-                                        </label>
-                                        <label className="flex items-center justify-between gap-2">
-                                            <span className="text-[9px] font-bold text-gray-400">PATH</span>
-                                            <input
-                                                type="checkbox"
-                                                checked={(selectedItem.config?.showPathPreview ?? true) !== false}
-                                                onChange={(e) => setCobotOverlay({ showPathPreview: e.target.checked })}
-                                            />
-                                        </label>
                                     </div>
                                 )}
                             </div>
@@ -1824,7 +2113,7 @@ export const UI: React.FC = () => {
                             </div>
                         ) : null}
 
-                        <div className="bg-gray-900/90 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-700 p-2 flex flex-wrap justify-center gap-2 sm:gap-3 items-center max-w-[calc(100vw-16px)]">
+                        <div className={`${panelFrameClass} rounded-2xl p-2 flex flex-wrap justify-center gap-2 sm:gap-3 items-center max-w-[calc(100vw-12px)]`}>
                             
                             <div className="flex items-center gap-2 mr-2">
                                 <button 

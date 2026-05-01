@@ -27,20 +27,20 @@ const defaultPartTemplates: PartTemplate[] = [
 const cloneDefaultPartTemplates = () => defaultPartTemplates.map(t => ({ ...t }));
 
 const defaultItems: PlacedItem[] = [
-    { id: 's1', type: 'sender', position: [-7.5, 0, 0], rotation: 1, config: { speed: 3, spawnColor: 'any', spawnSize: 'any', spawnTemplateId: 'any', machineSize: [2.5, 2.5], machineHeight: 1 } }, 
-    { id: 'b1', type: 'belt', position: [-5, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },   
-    { id: 'b2', type: 'belt', position: [-2.5, 0, 0], rotation: 1, config: { speed: 1, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },    
-    { id: 'b3', type: 'belt', position: [0, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },    
-    { id: 'b4', type: 'belt', position: [2.5, 0, 0], rotation: 1, config: { speed: 1, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },    
-    { id: 'b5', type: 'belt', position: [5.0, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },    
+    { id: 's1', type: 'sender', position: [-7.5, 0, 0], rotation: 1, config: { speed: 3, spawnColor: 'any', spawnSize: 'any', spawnTemplateId: 'any', machineSize: [2.5, 2.5], machineHeight: 1 } },
+    { id: 'b1', type: 'belt', position: [-5, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },
+    { id: 'b2', type: 'belt', position: [-2.5, 0, 0], rotation: 1, config: { speed: 1, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },
+    { id: 'b3', type: 'belt', position: [0, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },
+    { id: 'b4', type: 'belt', position: [2.5, 0, 0], rotation: 1, config: { speed: 1, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },
+    { id: 'b5', type: 'belt', position: [5.0, 0, 0], rotation: 1, config: { speed: 2, beltSize: [2.5, 2.5], beltHeight: 1, beltBorders: [true, true] } },
     { id: 'r2', type: 'receiver', position: [7.5, 0, 0], rotation: 3, config: { acceptColor: 'any', machineSize: [2.5, 2.5], machineHeight: 1 } },
 
-    { 
-        id: 'c1', 
-        type: 'cobot', 
-        position: [-2.5, 0, 2.5], 
-        rotation: 0, 
-        config: { 
+    {
+        id: 'c1',
+        type: 'cobot',
+        position: [-2.5, 0, 2.5],
+        rotation: 0,
+        config: {
             speed: 1.5,
             stackMatrix: [3, 3],
             mountSlot: [2, 2],
@@ -54,20 +54,66 @@ const defaultItems: PlacedItem[] = [
             showTeachPoints: true,
             showArmRange: true,
             cobotCollisionEnabled: true,
+            cobotUpperArmLength: 1.8,
+            cobotForearmLength: 1.38,
+            cobotWristLength: 0.56,
+            cobotUpperArmDiameter: 0.34,
+            cobotForearmDiameter: 0.26,
+            cobotWristDiameter: 0.2,
+            cobotShoulderMinDeg: -77,
+            cobotShoulderDefDeg: 0,
+            cobotShoulderMaxDeg: 80,
+            cobotElbowMinDeg: 13,
+            cobotElbowDefDeg: 90,
+            cobotElbowMaxDeg: 166,
+            cobotWristMinDeg: -180,
+            cobotWristDefDeg: -90,
+            cobotWristMaxDeg: 180,
+            cobotShoulderVisualOffsetX: 0,
+            cobotShoulderVisualOffsetY: 0,
+            cobotShoulderVisualOffsetZ: 0,
+            cobotElbowVisualOffsetX: 0.18,
+            cobotElbowVisualOffsetY: 0,
+            cobotElbowVisualOffsetZ: 0,
+            cobotWristVisualOffsetX: 0,
+            cobotWristVisualOffsetY: 0,
+            cobotWristVisualOffsetZ: 0,
+            cobotShoulderJointDiameter: 0.44,
+            cobotElbowJointDiameter: 0.44,
+            cobotWristJointDiameter: 0.3,
+            cobotToolJointDiameter: 0.26,
+            cobotShoulderJointLength: 0.44,
+            cobotElbowJointLength: 0.44,
+            cobotWristJointLength: 0.3,
+            cobotToolJointLength: 0.26,
+            cobotShoulderJointOffsetX: 0,
+            cobotShoulderJointOffsetY: 0,
+            cobotShoulderJointOffsetZ: 0,
+            cobotElbowJointOffsetX: 0,
+            cobotElbowJointOffsetY: 0,
+            cobotElbowJointOffsetZ: 0,
+            cobotWristJointOffsetX: 0,
+            cobotWristJointOffsetY: 0,
+            cobotWristJointOffsetZ: 0,
+            cobotPedestalHeight: 0.3,
+            cobotPedestalRadiusScale: 1,
+            cobotBaseRingRadiusScale: 1,
+            cobotTuningSelectedElement: 'shoulder',
+            cobotTuningMode: false,
             program: [
                 { action: 'pick', pos: [-2.5, 1.25, 0] },
                 { action: 'drop', pos: [-2.5, 1.25, 5] }
             ]
-        } 
-    },   
+        }
+    },
     { id: 't1', type: 'table', position: [-2.5, 0, 5], rotation: 0, config: { tableSize: [2.5, 2.5], tableHeight: 1, tableGrid: [3, 3], showTableGrid: true } },
 
-    { 
-        id: 'c2', 
-        type: 'cobot', 
-        position: [2.5, 0, 2.5], 
-        rotation: 0, 
-        config: { 
+    {
+        id: 'c2',
+        type: 'cobot',
+        position: [2.5, 0, 2.5],
+        rotation: 0,
+        config: {
             speed: 1.5,
             stackMatrix: [3, 3],
             mountSlot: [2, 2],
@@ -81,12 +127,58 @@ const defaultItems: PlacedItem[] = [
             showTeachPoints: true,
             showArmRange: true,
             cobotCollisionEnabled: true,
+            cobotUpperArmLength: 1.8,
+            cobotForearmLength: 1.38,
+            cobotWristLength: 0.56,
+            cobotUpperArmDiameter: 0.34,
+            cobotForearmDiameter: 0.26,
+            cobotWristDiameter: 0.2,
+            cobotShoulderMinDeg: -77,
+            cobotShoulderDefDeg: 0,
+            cobotShoulderMaxDeg: 80,
+            cobotElbowMinDeg: 13,
+            cobotElbowDefDeg: 90,
+            cobotElbowMaxDeg: 166,
+            cobotWristMinDeg: -180,
+            cobotWristDefDeg: -90,
+            cobotWristMaxDeg: 180,
+            cobotShoulderVisualOffsetX: 0,
+            cobotShoulderVisualOffsetY: 0,
+            cobotShoulderVisualOffsetZ: 0,
+            cobotElbowVisualOffsetX: 0.18,
+            cobotElbowVisualOffsetY: 0,
+            cobotElbowVisualOffsetZ: 0,
+            cobotWristVisualOffsetX: 0,
+            cobotWristVisualOffsetY: 0,
+            cobotWristVisualOffsetZ: 0,
+            cobotShoulderJointDiameter: 0.44,
+            cobotElbowJointDiameter: 0.44,
+            cobotWristJointDiameter: 0.3,
+            cobotToolJointDiameter: 0.26,
+            cobotShoulderJointLength: 0.44,
+            cobotElbowJointLength: 0.44,
+            cobotWristJointLength: 0.3,
+            cobotToolJointLength: 0.26,
+            cobotShoulderJointOffsetX: 0,
+            cobotShoulderJointOffsetY: 0,
+            cobotShoulderJointOffsetZ: 0,
+            cobotElbowJointOffsetX: 0,
+            cobotElbowJointOffsetY: 0,
+            cobotElbowJointOffsetZ: 0,
+            cobotWristJointOffsetX: 0,
+            cobotWristJointOffsetY: 0,
+            cobotWristJointOffsetZ: 0,
+            cobotPedestalHeight: 0.3,
+            cobotPedestalRadiusScale: 1,
+            cobotBaseRingRadiusScale: 1,
+            cobotTuningSelectedElement: 'shoulder',
+            cobotTuningMode: false,
             program: [
                 { action: 'pick', pos: [2.5, 1.25, 0] },
                 { action: 'drop', pos: [2.5, 1.25, 5] }
             ]
-        } 
-    },   
+        }
+    },
     { id: 'r1', type: 'receiver', position: [2.5, 0, 5], rotation: 0, config: { acceptColor: 'any', machineSize: [2.5, 2.5], machineHeight: 1 } },
     { id: 'cam1', type: 'camera', position: [2.5, 0, 0], rotation: 0, config: { showBeam: true } }
 ];
@@ -128,7 +220,7 @@ class Store {
             moveModeOriginalItem: null,
             teachAction: null,
             machineStates: {},
-            
+
             setDraftPlacement: (draft) => this.setState({ draftPlacement: draft }),
             setCredits: (credits: number) => this.setState({ credits }),
             setScore: (score) => {
@@ -142,10 +234,21 @@ class Store {
                         isPaused: false,
                         score: 0,
                         selectedItemId: null,
+                        moveModeItemId: null,
+                        moveModeOriginalItem: null,
                         teachAction: null,
                         buildMode: null,
                         placedItems: this.state.placedItems.map(item => item.type === 'cobot'
-                            ? { ...item, config: { ...item.config, collisionStopped: false } }
+                            ? {
+                                ...item,
+                                config: {
+                                    ...item.config,
+                                    collisionStopped: false,
+                                    cobotManualControl: false,
+                                    cobotTuningMode: false,
+                                    isStopped: false,
+                                }
+                            }
                             : item
                         )
                     });
@@ -165,12 +268,12 @@ class Store {
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.spawnTemplateId = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'belt') { defaultConfig.speed = 2; defaultConfig.beltSize = [2.5, 2.5]; defaultConfig.beltHeight = 1; defaultConfig.beltBorders = [true, true]; }
-                if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.stackMatrix = [3, 3]; defaultConfig.mountSlot = [2, 2]; defaultConfig.defaultDropSortColor = true; defaultConfig.defaultDropSortSize = true; defaultConfig.defaultDropSortShape = true; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; defaultConfig.cobotCollisionEnabled = true; }
+                if (buildMode === 'cobot') { defaultConfig.program = []; defaultConfig.stackMatrix = [3, 3]; defaultConfig.mountSlot = [2, 2]; defaultConfig.defaultDropSortColor = true; defaultConfig.defaultDropSortSize = true; defaultConfig.defaultDropSortShape = true; defaultConfig.pickColors = []; defaultConfig.pickSizes = []; defaultConfig.linkedCameraIds = []; defaultConfig.showTeachZones = true; defaultConfig.showTeachPoints = true; defaultConfig.showArmRange = true; defaultConfig.cobotCollisionEnabled = true; defaultConfig.cobotUpperArmLength = 1.8; defaultConfig.cobotForearmLength = 1.38; defaultConfig.cobotWristLength = 0.56; defaultConfig.cobotUpperArmDiameter = 0.34; defaultConfig.cobotForearmDiameter = 0.26; defaultConfig.cobotWristDiameter = 0.2; defaultConfig.cobotShoulderMinDeg = -77; defaultConfig.cobotShoulderDefDeg = 0; defaultConfig.cobotShoulderMaxDeg = 80; defaultConfig.cobotElbowMinDeg = 13; defaultConfig.cobotElbowDefDeg = 90; defaultConfig.cobotElbowMaxDeg = 166; defaultConfig.cobotWristMinDeg = -180; defaultConfig.cobotWristDefDeg = -90; defaultConfig.cobotWristMaxDeg = 180; defaultConfig.cobotShoulderVisualOffsetX = 0; defaultConfig.cobotShoulderVisualOffsetY = 0; defaultConfig.cobotShoulderVisualOffsetZ = 0; defaultConfig.cobotElbowVisualOffsetX = 0.18; defaultConfig.cobotElbowVisualOffsetY = 0; defaultConfig.cobotElbowVisualOffsetZ = 0; defaultConfig.cobotWristVisualOffsetX = 0; defaultConfig.cobotWristVisualOffsetY = 0; defaultConfig.cobotWristVisualOffsetZ = 0; defaultConfig.cobotShoulderJointDiameter = 0.44; defaultConfig.cobotElbowJointDiameter = 0.44; defaultConfig.cobotWristJointDiameter = 0.3; defaultConfig.cobotToolJointDiameter = 0.26; defaultConfig.cobotShoulderJointLength = 0.44; defaultConfig.cobotElbowJointLength = 0.44; defaultConfig.cobotWristJointLength = 0.3; defaultConfig.cobotToolJointLength = 0.26; defaultConfig.cobotShoulderJointOffsetX = 0; defaultConfig.cobotShoulderJointOffsetY = 0; defaultConfig.cobotShoulderJointOffsetZ = 0; defaultConfig.cobotElbowJointOffsetX = 0; defaultConfig.cobotElbowJointOffsetY = 0; defaultConfig.cobotElbowJointOffsetZ = 0; defaultConfig.cobotWristJointOffsetX = 0; defaultConfig.cobotWristJointOffsetY = 0; defaultConfig.cobotWristJointOffsetZ = 0; defaultConfig.cobotPedestalHeight = 0.3; defaultConfig.cobotPedestalRadiusScale = 1; defaultConfig.cobotBaseRingRadiusScale = 1; defaultConfig.cobotTuningMode = false; }
                 if (buildMode === 'camera') { defaultConfig.showBeam = true; }
                 if (buildMode === 'table') { defaultConfig.tableSize = [2.5, 2.5]; defaultConfig.tableHeight = 1; defaultConfig.tableGrid = [3, 3]; defaultConfig.showTableGrid = true; }
                 if (buildMode === 'pile') { defaultConfig.pileCount = 0; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; defaultConfig.tableGrid = [3, 3]; }
                 if (buildMode === 'indexed_receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
-                
+
                 this.setState({ buildMode, draftPlacement: null, moveModeItemId: null, isRunning: false, isPaused: false, selectedItemId: null, teachAction: null, buildConfig: defaultConfig });
             },
             setBuildRotation: (buildRotation: Direction) => this.setState({ buildRotation }),
@@ -224,7 +327,7 @@ class Store {
                 this.setState({ machineStates: { ...this.state.machineStates, [id]: runtime } });
             },
             clearMachineStates: () => this.setState({ machineStates: {} }),
-            
+
             addPlacedItem: (item: Omit<PlacedItem, 'id'>) => {
                 const cost = ITEM_COSTS[item.type];
                 if (this.state.credits >= cost) {
@@ -279,7 +382,7 @@ class Store {
     setState = (updates: Partial<FactoryState>) => {
         this.state = { ...this.state, ...updates };
         this.listeners.forEach(l => l());
-        
+
         try {
             const { credits, placedItems, partTemplates, cameraPreviewFps, cameraPreviewWidth, cameraPreviewHeight } = this.state;
             localStorage.setItem(STORAGE_KEY, JSON.stringify({

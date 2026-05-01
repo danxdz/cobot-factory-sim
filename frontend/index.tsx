@@ -1,6 +1,10 @@
-import './vertex-ai-proxy-interceptor.js';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import './styles.css';
+
+if (import.meta.env.VITE_ENABLE_VERTEX_PROXY === 'true') {
+    void import('./vertex-ai-proxy-interceptor.js');
+}
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

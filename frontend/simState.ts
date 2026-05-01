@@ -40,6 +40,13 @@ export interface CobotDebugLogEntry {
     phase: string;
     event: string;
     detail?: string;
+    reason?: string;
+    itemId?: string;
+    mode?: string;
+    durationSec?: number;
+    snapDist?: number;
+    planarDist?: number;
+    verticalDist?: number;
 }
 
 export const simState = {

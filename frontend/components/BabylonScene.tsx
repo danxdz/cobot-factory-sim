@@ -1301,6 +1301,43 @@ export const BabylonScene: React.FC = () => {
             }
             captureCameraPreviews(st);
 
+        function syncCobotStateFromStore(st: any, items: PlacedItem[]) {
+            for (const itm of items) {
+                if (itm.type !== 'cobot') continue;
+                const cState = cobotStates.get(itm.id);
+                if (!cState) continue;
+                cState.selfItem = itm;
+                cState.speed = itm.config?.speed || 1.0;
+                cState.manualControl = itm.config?.cobotManualControl === true;
+                cState.manualTarget = itm.config?.cobotManualTarget ? new Vector3(...itm.config.cobotManualTarget) : null;
+                cState.program = itm.config?.program || [];
+                cState.tuningMode = moveModeItemId === itm.id;
+                if (!itm.config?.collisionStopped) cState.safetyStopped = false;
+            }
+        }
+
+        function cobotRuntimeState(state: CobotState, simActive: boolean): MachineRuntimeState {
+            if (!simActive && !state.manualControl && state.selfItem?.config?.cobotTuningMode !== true) {
+                return { health: 'idle', label: 'Idle', detail: 'Simulation stopped' };
+            }
+            if (state.safetyStopped) return { health: 'warning', label: 'Safety Stop', detail: 'Collision detected or limit reached' };
+            if (state.phase === 'manual') return { health: 'ok', label: 'Manual Control', detail: state.manualControl ? 'Jogging...' : 'Tuning...' };
+            if (state.phase === 'retreat') return { health: 'ok', label: 'Retreating', detail: 'Moving to safety...' };
+            if (state.phase === 'pick') return { health: 'ok', label: 'Picking', detail: 'Acquiring part...' };
+            if (state.phase === 'place') return { health: 'ok', label: 'Placing', detail: 'Releasing part...' };
+            if (state.phase === 'move') return { health: 'ok', label: 'Moving', detail: 'In transit...' };
+            return { health: 'ok', label: 'Ready', detail: 'Program running...' };
+        }
+
+        function applyCobotStatusVisual(state: CobotState, runtime: MachineRuntimeState) {
+            if (!state.statusDisplay) return;
+            const color = runtime.health === 'error' ? '#ef4444' : runtime.health === 'warning' ? '#f59e0b' : '#10b981';
+            (state.statusDisplay.material as PBRMaterial).emissiveColor = hexToColor3(color);
+            (state.statusDisplay.material as PBRMaterial).albedoColor = hexToColor3(color);
+        }
+            // Keep cobot runtime state in sync with latest store config every frame.
+            syncCobotStateFromStore(st, placedItems);
+
             // Sync gizmo state
             if (moveModeItemId !== prevMoveModeItemId) {
                 prevMoveModeItemId = moveModeItemId;
@@ -1335,28 +1372,43 @@ export const BabylonScene: React.FC = () => {
                 cursorMesh.isVisible = false;
             }
 
+            // Always tick cobots to allow manual interaction (Jog/Tuning) even if the sim is stopped or paused.
+            // But only update parts/physics/spawning if running and not paused.
+            const simActive = isRunning && !isPaused;
+            const cobotDelta = simActive ? delta : Math.max(0.0001, engine.getDeltaTime() / 1000);
+
+            for (const [id, cState] of cobotStates) {
+                try {
+                    const collided = tickCobot(cState, cobotDelta, simActive);
+                    const runtime = cobotRuntimeState(cState, simActive);
+                    st.setMachineState(id, runtime);
+                    applyCobotStatusVisual(cState, runtime);
+
+                    if (collided) {
+                        const owner = placedItems.find(item => item.id === id);
+                        if (owner && !owner.config?.collisionStopped) {
+                            st.updatePlacedItem(id, { config: { ...owner.config, collisionStopped: true } });
+                        }
+                    } else if (!cState.safetyStopped) {
+                        const owner = placedItems.find(item => item.id === id);
+                        if (owner?.config?.collisionStopped) {
+                            st.updatePlacedItem(id, { config: { ...owner.config, collisionStopped: false } });
+                        }
+                    }
+                } catch (err) {
+                    console.error(`[BabylonScene] tickCobot crashed for ${id}`, err);
+                }
+            }
+
             if (!isRunning) {
                 clearToolpaths();
-                placedItems.filter(item => item.type === 'cobot').forEach(item => {
-                    if (st.machineStates[item.id]?.health === 'stopped') return;
-                    const runtime = { health: 'idle', label: 'Idle', detail: 'Simulation stopped' } as MachineRuntimeState;
-                    st.setMachineState(item.id, runtime);
-                    const cState = cobotStates.get(item.id);
-                    if (cState) applyCobotStatusVisual(cState, runtime);
-                });
-                partMeshes.forEach(m => { if (m) m.isVisible = false; });
+                partMeshes.forEach(m => { if (m) m.isVisible = true; }); // Keep parts visible even when stopped
                 velY.clear();
                 velXZ.clear();
                 spinY.clear();
                 return;
             }
             if (isPaused) {
-                placedItems.filter(item => item.type === 'cobot').forEach(item => {
-                    const runtime = { health: 'idle', label: 'Paused', detail: 'Simulation paused' } as MachineRuntimeState;
-                    st.setMachineState(item.id, runtime);
-                    const cState = cobotStates.get(item.id);
-                    if (cState) applyCobotStatusVisual(cState, runtime);
-                });
                 return;
             }
 
@@ -1409,25 +1461,6 @@ export const BabylonScene: React.FC = () => {
 
             updateCameraDetections(placedItems.filter(i => i.type === 'camera'), placedItems);
 
-            // ── Tick cobots ──────────────────────────────────────────────
-            for (const [id, cState] of cobotStates) {
-                const collided = tickCobot(cState, delta, true);
-                const runtime = cobotRuntimeState(cState, true);
-                st.setMachineState(id, runtime);
-                applyCobotStatusVisual(cState, runtime);
-                if (collided) {
-                    const owner = placedItems.find(item => item.id === id);
-                    if (owner) st.updatePlacedItem(id, { config: { ...owner.config, collisionStopped: true } });
-                    const warning = { health: 'warning', label: 'Collision', detail: 'This cobot paused; other machines keep running' } as MachineRuntimeState;
-                    st.setMachineState(id, warning);
-                    applyCobotStatusVisual(cState, warning);
-                } else if (!cState.safetyStopped) {
-                    const owner = placedItems.find(item => item.id === id);
-                    if (owner?.config?.collisionStopped) {
-                        st.updatePlacedItem(id, { config: { ...owner.config, collisionStopped: false } });
-                    }
-                }
-            }
 
             // ── Manual physics sync ───────────────────────────────────────
             const GRAVITY = 9.81;

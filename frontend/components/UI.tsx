@@ -1,7 +1,7 @@
-﻿import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle, Link2, Target, List, Home } from 'lucide-react';
 import { useFactoryStore } from '../store';
-import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem } from '../types';
+import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem, ItemConfig } from '../types';
 import { simState, SimItem } from '../simState';
 import { PartPreview3D } from './PartPreview3D';
 
@@ -35,6 +35,59 @@ const COBOT_SLOT_RADIUS = 0.28;
 const PART_THICKNESS = 0.025;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
+const COBOT_UPPER_ARM_LENGTH_DEFAULT = 1.8;
+const COBOT_FOREARM_LENGTH_DEFAULT = 1.38;
+const COBOT_WRIST_LENGTH_DEFAULT = 0.56;
+const COBOT_HAND_LINK_LENGTH = 0.05;
+const COBOT_GRIPPER_TIP_OFFSET = 0.215;
+const COBOT_PEDESTAL_HEIGHT_DEFAULT = 0.3;
+
+function clampNum(v: number, lo: number, hi: number): number {
+    return Math.max(lo, Math.min(hi, v));
+}
+
+function cobotMountWorld(item: PlacedItem): { x: number; z: number } {
+    const grid = item.config?.stackMatrix || [3, 3];
+    const cols = Math.max(1, Math.min(6, Math.round(grid[0] || 3)));
+    const rows = Math.max(1, Math.min(6, Math.round(grid[1] || 3)));
+    const mountSlot = item.config?.mountSlot || [cols - 1, rows - 1];
+    const mountCol = Math.max(0, Math.min(cols - 1, Math.round(mountSlot[0] ?? (cols - 1))));
+    const mountRow = Math.max(0, Math.min(rows - 1, Math.round(mountSlot[1] ?? (rows - 1))));
+    const usableW = Math.max(0.2, COBOT_PLATFORM_W - COBOT_PLATFORM_MARGIN);
+    const usableD = Math.max(0.2, COBOT_PLATFORM_D - COBOT_PLATFORM_MARGIN);
+    const cellW = usableW / cols;
+    const cellD = usableD / rows;
+    const localX = -usableW / 2 + cellW * (mountCol + 0.5);
+    const localZ = -usableD / 2 + cellD * (mountRow + 0.5);
+    const rotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][item.rotation] ?? 0;
+    const cosY = Math.cos(rotY);
+    const sinY = Math.sin(rotY);
+    return {
+        x: item.position[0] + localX * cosY + localZ * sinY,
+        z: item.position[2] - localX * sinY + localZ * cosY,
+    };
+}
+
+function cobotArmBounds(item: PlacedItem) {
+    const l1 = clampNum(item.config?.cobotUpperArmLength ?? COBOT_UPPER_ARM_LENGTH_DEFAULT, 0.2, 3);
+    const l2 = clampNum(item.config?.cobotForearmLength ?? COBOT_FOREARM_LENGTH_DEFAULT, 0.5, 3);
+    const l3 = clampNum(item.config?.cobotWristLength ?? COBOT_WRIST_LENGTH_DEFAULT, 0.2, 1.5) + COBOT_HAND_LINK_LENGTH + COBOT_GRIPPER_TIP_OFFSET;
+    const pedestalH = clampNum(item.config?.cobotPedestalHeight ?? COBOT_PEDESTAL_HEIGHT_DEFAULT, 0.18, 0.8);
+    const planarReach = Math.max(0.25, l1 + l2 - 0.08);
+    const mount = cobotMountWorld(item);
+    const mountY = item.position[1] + COBOT_PLATFORM_TOP_Y + pedestalH + 0.05;
+    const yMin = Math.max(0.08, mountY - (l1 + l2) - l3);
+    const yMax = Math.max(yMin + 0.2, mountY + (l1 + l2) - l3);
+    return {
+        planarReach,
+        xMin: mount.x - planarReach,
+        xMax: mount.x + planarReach,
+        zMin: mount.z - planarReach,
+        zMax: mount.z + planarReach,
+        yMin,
+        yMax,
+    };
+}
 
 type CobotSlot = {
     col: number;
@@ -106,14 +159,22 @@ function supportTypeForPart(part: SimItem, placedItems: PlacedItem[]): ItemType 
     return bestType;
 }
 const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { label: string, value: number, min: number, max: number, step: number, onChange: (val: number) => void, isWidth?: boolean }) => {
-    const handleWheel = (e: React.WheelEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -step : step;
-        let nextVal = value + delta;
-        nextVal = Math.max(min, Math.min(max, nextVal));
-        onChange(nextVal);
-    };
+    const inputRef = React.useRef<HTMLInputElement>(null);
+
+    React.useEffect(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        const handleWheelRaw = (e: WheelEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const delta = e.deltaY > 0 ? -step : step;
+            let nextVal = value + delta;
+            nextVal = Math.max(min, Math.min(max, nextVal));
+            onChange(nextVal);
+        };
+        el.addEventListener('wheel', handleWheelRaw, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheelRaw);
+    }, [value, min, max, step, onChange]);
 
     return (
         <label className={`flex flex-col gap-1 ${isWidth ? 'col-span-full' : ''}`}>
@@ -121,21 +182,143 @@ const RangeSlider = ({ label, value, min, max, step, onChange, isWidth }: { labe
                 <span>{label}</span>
                 <span className="text-[#38bdf8] font-mono">{Number(value).toFixed(2)}</span>
             </div>
-            <input 
-                type="range" 
-                min={min} max={max} step={step} 
-                value={value} 
-                onChange={(e) => onChange(parseFloat(e.target.value) || 0)} 
-                onWheel={handleWheel}
+            <input
+                ref={inputRef}
+                type="range"
+                min={min} max={max} step={step}
+                value={value}
+                onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
                 className="w-full cursor-ew-resize"
             />
         </label>
     );
 };
 
-const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCancel, onValidate }: { item: PlacedItem, updateItem: (updates: Partial<PlacedItem>) => void, isDraft?: boolean, snapStep: number, heightStep: number, onCancel?: () => void, onValidate?: () => void }) => {
+const TriRangeSlider = ({
+    label,
+    min,
+    max,
+    step,
+    minVal,
+    defVal,
+    maxVal,
+    onChange,
+}: {
+    label: string;
+    min: number;
+    max: number;
+    step: number;
+    minVal: number;
+    defVal: number;
+    maxVal: number;
+    onChange: (handle: 'min' | 'def' | 'max', value: number) => void;
+}) => {
+    const trackRef = useRef<HTMLDivElement | null>(null);
+    const [dragging, setDragging] = useState<'min' | 'def' | 'max' | null>(null);
+    const clampVal = (v: number) => Math.max(min, Math.min(max, v));
+    const snapVal = (v: number) => Math.round(v / step) * step;
+    const pct = (v: number) => ((clampVal(v) - min) / Math.max(0.0001, max - min)) * 100;
+    const minPct = pct(minVal);
+    const defPct = pct(defVal);
+    const maxPct = pct(maxVal);
+
+    const valueFromClientX = (clientX: number) => {
+        const el = trackRef.current;
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const t = clampVal(min + ((clientX - rect.left) / Math.max(1, rect.width)) * (max - min));
+        return clampVal(snapVal(t));
+    };
+
+    const beginDrag = (handle: 'min' | 'def' | 'max', e: React.PointerEvent<HTMLButtonElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(handle);
+        (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+    };
+
+    const onTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!dragging) return;
+        const v = valueFromClientX(e.clientX);
+        if (v === null) return;
+        onChange(dragging, v);
+    };
+
+    const stopDrag = () => setDragging(null);
+
+    return (
+        <div className="flex flex-col gap-1 rounded border border-gray-700 bg-gray-900/45 px-2 py-1.5">
+            <div className="flex items-center justify-between text-[9px] font-bold text-gray-300">
+                <span>{label}</span>
+                <span className="font-mono text-cyan-200">
+                    {minVal.toFixed(0)} / {defVal.toFixed(0)} / {maxVal.toFixed(0)}
+                </span>
+            </div>
+            <div
+                ref={trackRef}
+                className="relative h-6 rounded bg-gray-800 border border-gray-700"
+                onPointerMove={onTrackPointerMove}
+                onPointerUp={stopDrag}
+                onPointerCancel={stopDrag}
+                onPointerLeave={stopDrag}
+            >
+                <div className="absolute left-0 right-0 top-1/2 h-1 -translate-y-1/2 rounded bg-gray-600" />
+                <div
+                    className="absolute top-1/2 h-1 -translate-y-1/2 rounded bg-emerald-500/55"
+                    style={{ left: `${minPct}%`, width: `${Math.max(0, maxPct - minPct)}%` }}
+                />
+                <button
+                    type="button"
+                    className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border border-cyan-200 bg-cyan-500 shadow-[0_0_8px_rgba(56,189,248,0.5)]"
+                    style={{ left: `${minPct}%` }}
+                    onPointerDown={(e) => beginDrag('min', e)}
+                    title="Minimum angle"
+                />
+                <button
+                    type="button"
+                    className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border border-amber-100 bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+                    style={{ left: `${defPct}%` }}
+                    onPointerDown={(e) => beginDrag('def', e)}
+                    title="Default angle"
+                />
+                <button
+                    type="button"
+                    className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border border-fuchsia-100 bg-fuchsia-400 shadow-[0_0_8px_rgba(232,121,249,0.5)]"
+                    style={{ left: `${maxPct}%` }}
+                    onPointerDown={(e) => beginDrag('max', e)}
+                    title="Maximum angle"
+                />
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-[8px] font-bold text-gray-500">
+                <span className="text-cyan-300">MIN</span>
+                <span className="text-amber-300 text-center">DEF</span>
+                <span className="text-fuchsia-300 text-right">MAX</span>
+            </div>
+        </div>
+    );
+};
+
+const TransformPanel = ({
+    item,
+    updateItem,
+    isDraft,
+    snapStep,
+    heightStep,
+    onCancel,
+    onValidate,
+    applyCobotGeometryToAll
+}: {
+    item: PlacedItem,
+    updateItem: (updates: Partial<PlacedItem>) => void,
+    isDraft?: boolean,
+    snapStep: number,
+    heightStep: number,
+    onCancel?: () => void,
+    onValidate?: () => void,
+    applyCobotGeometryToAll?: (geometry: Partial<ItemConfig>) => void
+}) => {
     const snapValue = (val: number, step: number) => Math.round(val / step) * step;
-    
+
     const patchPosition = (axis: 0 | 1 | 2, value: number) => {
         const next = [...item.position] as [number, number, number];
         next[axis] = snapValue(value, axis === 1 ? heightStep : snapStep);
@@ -155,8 +338,223 @@ const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCan
         else if (item.type === 'table') updateItem({ config: { ...item.config, tableHeight: v } });
         else updateItem({ config: { ...item.config, machineHeight: v } });
     };
+    const currentCobotGeometry = (): Partial<ItemConfig> => ({
+        cobotUpperArmLength: item.config?.cobotUpperArmLength ?? 1.8,
+        cobotForearmLength: item.config?.cobotForearmLength ?? 1.38,
+        cobotWristLength: item.config?.cobotWristLength ?? 0.56,
+        cobotUpperArmDiameter: item.config?.cobotUpperArmDiameter ?? 0.34,
+        cobotForearmDiameter: item.config?.cobotForearmDiameter ?? 0.26,
+        cobotWristDiameter: item.config?.cobotWristDiameter ?? 0.2,
+        cobotShoulderMinDeg: item.config?.cobotShoulderMinDeg ?? -77,
+        cobotShoulderDefDeg: item.config?.cobotShoulderDefDeg ?? 0,
+        cobotShoulderMaxDeg: item.config?.cobotShoulderMaxDeg ?? 80,
+        cobotElbowMinDeg: item.config?.cobotElbowMinDeg ?? 13,
+        cobotElbowDefDeg: item.config?.cobotElbowDefDeg ?? 90,
+        cobotElbowMaxDeg: item.config?.cobotElbowMaxDeg ?? 166,
+        cobotWristMinDeg: item.config?.cobotWristMinDeg ?? -180,
+        cobotWristDefDeg: item.config?.cobotWristDefDeg ?? -90,
+        cobotWristMaxDeg: item.config?.cobotWristMaxDeg ?? 180,
+        cobotShoulderVisualOffsetX: item.config?.cobotShoulderVisualOffsetX ?? 0,
+        cobotShoulderVisualOffsetY: item.config?.cobotShoulderVisualOffsetY ?? 0,
+        cobotShoulderVisualOffsetZ: item.config?.cobotShoulderVisualOffsetZ ?? 0,
+        cobotElbowVisualOffsetX: item.config?.cobotElbowVisualOffsetX ?? 0.18,
+        cobotElbowVisualOffsetY: item.config?.cobotElbowVisualOffsetY ?? 0,
+        cobotElbowVisualOffsetZ: item.config?.cobotElbowVisualOffsetZ ?? 0,
+        cobotWristVisualOffsetX: item.config?.cobotWristVisualOffsetX ?? 0,
+        cobotWristVisualOffsetY: item.config?.cobotWristVisualOffsetY ?? 0,
+        cobotWristVisualOffsetZ: item.config?.cobotWristVisualOffsetZ ?? 0,
+        cobotShoulderJointDiameter: item.config?.cobotShoulderJointDiameter ?? 0.44,
+        cobotElbowJointDiameter: item.config?.cobotElbowJointDiameter ?? 0.44,
+        cobotWristJointDiameter: item.config?.cobotWristJointDiameter ?? 0.3,
+        cobotToolJointDiameter: item.config?.cobotToolJointDiameter ?? 0.26,
+        cobotShoulderJointLength: item.config?.cobotShoulderJointLength ?? 0.44,
+        cobotElbowJointLength: item.config?.cobotElbowJointLength ?? 0.44,
+        cobotWristJointLength: item.config?.cobotWristJointLength ?? 0.3,
+        cobotToolJointLength: item.config?.cobotToolJointLength ?? 0.26,
+        cobotShoulderJointOffsetX: item.config?.cobotShoulderJointOffsetX ?? 0,
+        cobotShoulderJointOffsetY: item.config?.cobotShoulderJointOffsetY ?? 0,
+        cobotShoulderJointOffsetZ: item.config?.cobotShoulderJointOffsetZ ?? 0,
+        cobotElbowJointOffsetX: item.config?.cobotElbowJointOffsetX ?? 0,
+        cobotElbowJointOffsetY: item.config?.cobotElbowJointOffsetY ?? 0,
+        cobotElbowJointOffsetZ: item.config?.cobotElbowJointOffsetZ ?? 0,
+        cobotWristJointOffsetX: item.config?.cobotWristJointOffsetX ?? 0,
+        cobotWristJointOffsetY: item.config?.cobotWristJointOffsetY ?? 0,
+        cobotWristJointOffsetZ: item.config?.cobotWristJointOffsetZ ?? 0,
+        cobotPedestalHeight: item.config?.cobotPedestalHeight ?? 0.3,
+        cobotPedestalRadiusScale: item.config?.cobotPedestalRadiusScale ?? 1,
+        cobotBaseRingRadiusScale: item.config?.cobotBaseRingRadiusScale ?? 1,
+    });
+    const patchJointAngles = (
+        key: 'shoulder' | 'elbow' | 'wrist',
+        field: 'min' | 'def' | 'max',
+        value: number
+    ) => {
+        if (item.type !== 'cobot') return;
+        const minKey = key === 'shoulder' ? 'cobotShoulderMinDeg' : key === 'elbow' ? 'cobotElbowMinDeg' : 'cobotWristMinDeg';
+        const defKey = key === 'shoulder' ? 'cobotShoulderDefDeg' : key === 'elbow' ? 'cobotElbowDefDeg' : 'cobotWristDefDeg';
+        const maxKey = key === 'shoulder' ? 'cobotShoulderMaxDeg' : key === 'elbow' ? 'cobotElbowMaxDeg' : 'cobotWristMaxDeg';
+        const absMin = -180;
+        const absMax = 180;
+        const currentMin = item.config?.[minKey] ?? (key === 'shoulder' ? -77 : key === 'elbow' ? 13 : -180);
+        const currentDef = item.config?.[defKey] ?? (key === 'shoulder' ? 0 : key === 'elbow' ? 90 : -90);
+        const currentMax = item.config?.[maxKey] ?? (key === 'shoulder' ? 80 : key === 'elbow' ? 166 : 180);
+        let min = currentMin;
+        let def = currentDef;
+        let max = currentMax;
+        if (field === 'min') min = Math.max(absMin, Math.min(value, absMax));
+        if (field === 'def') def = Math.max(absMin, Math.min(value, absMax));
+        if (field === 'max') max = Math.max(absMin, Math.min(value, absMax));
+        if (min > max) {
+            if (field === 'min') max = min;
+            else min = max;
+        }
+        def = Math.max(min, Math.min(max, def));
+        updateItem({ config: { ...item.config, [minKey]: min, [defKey]: def, [maxKey]: max } });
+    };
+    const applyCobotPreset = (geometry: Partial<ItemConfig>) => {
+        if (item.type !== 'cobot') return;
+        updateItem({ config: { ...item.config, ...geometry } });
+    };
 
     const hasSize = ['sender', 'receiver', 'indexed_receiver', 'pile', 'belt', 'table'].includes(item.type);
+    const [showSegmentTuning, setShowSegmentTuning] = useState(true);
+    const [activeSegment, setActiveSegment] = useState<'shoulder' | 'elbow' | 'wrist' | 'shoulder_joint' | 'elbow_joint' | 'wrist_joint' | 'pedestal' | 'base'>('shoulder');
+    const segmentDefs: Record<string, any> = {
+        shoulder: {
+            label: 'Shoulder Seg',
+            lenKey: 'cobotUpperArmLength',
+            diaKey: 'cobotUpperArmDiameter',
+            angleKey: 'shoulder',
+            minLen: 0.2,
+            maxLen: 3,
+            defaultLen: 1.8,
+            defaultDia: 0.34,
+            posX: 'cobotShoulderVisualOffsetX',
+            posY: 'cobotShoulderVisualOffsetY',
+            posZ: 'cobotShoulderVisualOffsetZ',
+            defaultPosX: 0,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        elbow: {
+            label: 'Elbow Seg',
+            lenKey: 'cobotForearmLength',
+            diaKey: 'cobotForearmDiameter',
+            angleKey: 'elbow',
+            minLen: 0.5,
+            maxLen: 3,
+            defaultLen: 1.38,
+            defaultDia: 0.26,
+            posX: 'cobotElbowVisualOffsetX',
+            posY: 'cobotElbowVisualOffsetY',
+            posZ: 'cobotElbowVisualOffsetZ',
+            defaultPosX: 0.18,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        wrist: {
+            label: 'Wrist Seg',
+            lenKey: 'cobotWristLength',
+            diaKey: 'cobotWristDiameter',
+            angleKey: 'wrist',
+            minLen: 0.2,
+            maxLen: 1.5,
+            defaultLen: 0.56,
+            defaultDia: 0.2,
+            posX: 'cobotWristVisualOffsetX',
+            posY: 'cobotWristVisualOffsetY',
+            posZ: 'cobotWristVisualOffsetZ',
+            defaultPosX: 0,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        shoulder_joint: {
+            label: 'Shoulder Joint',
+            jointDiaKey: 'cobotShoulderJointDiameter',
+            jointLenKey: 'cobotShoulderJointLength',
+            angleKey: 'shoulder',
+            posX: 'cobotShoulderJointOffsetX',
+            posY: 'cobotShoulderJointOffsetY',
+            posZ: 'cobotShoulderJointOffsetZ',
+            defaultDia: 0.44,
+            defaultLen: 0.44,
+            minLen: 0.12,
+            maxLen: 1.2,
+            defaultPosX: 0,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        elbow_joint: {
+            label: 'Elbow Joint',
+            jointDiaKey: 'cobotElbowJointDiameter',
+            jointLenKey: 'cobotElbowJointLength',
+            angleKey: 'elbow',
+            posX: 'cobotElbowJointOffsetX',
+            posY: 'cobotElbowJointOffsetY',
+            posZ: 'cobotElbowJointOffsetZ',
+            defaultDia: 0.44,
+            defaultLen: 0.44,
+            minLen: 0.12,
+            maxLen: 1.2,
+            defaultPosX: 0,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        wrist_joint: {
+            label: 'Wrist Joint',
+            jointDiaKey: 'cobotWristJointDiameter',
+            jointLenKey: 'cobotWristJointLength',
+            angleKey: 'wrist',
+            posX: 'cobotWristJointOffsetX',
+            posY: 'cobotWristJointOffsetY',
+            posZ: 'cobotWristJointOffsetZ',
+            defaultDia: 0.3,
+            defaultLen: 0.3,
+            minLen: 0.1,
+            maxLen: 0.9,
+            toolJointDiaKey: 'cobotToolJointDiameter',
+            toolJointLenKey: 'cobotToolJointLength',
+            defaultToolDia: 0.26,
+            defaultToolLen: 0.26,
+            defaultPosX: 0,
+            defaultPosY: 0,
+            defaultPosZ: 0,
+        },
+        pedestal: {
+            label: 'Pedestal',
+            pedestalHeightKey: 'cobotPedestalHeight',
+            pedestalRadiusScaleKey: 'cobotPedestalRadiusScale',
+            defaultPedestalHeight: 0.3,
+            defaultPedestalScale: 1,
+        },
+        base: {
+            label: 'Base Ring',
+            baseRadiusScaleKey: 'cobotBaseRingRadiusScale',
+            defaultBaseScale: 1,
+        },
+    };
+    const activeSegDef = segmentDefs[activeSegment];
+    const activeAngleMin = activeSegDef?.angleKey === 'shoulder'
+        ? (item.config?.cobotShoulderMinDeg ?? -77)
+        : activeSegDef?.angleKey === 'elbow'
+            ? (item.config?.cobotElbowMinDeg ?? 13)
+            : (item.config?.cobotWristMinDeg ?? -180);
+    const activeAngleDef = activeSegDef?.angleKey === 'shoulder'
+        ? (item.config?.cobotShoulderDefDeg ?? 0)
+        : activeSegDef?.angleKey === 'elbow'
+            ? (item.config?.cobotElbowDefDeg ?? 90)
+            : (item.config?.cobotWristDefDeg ?? -90);
+    const activeAngleMax = activeSegDef?.angleKey === 'shoulder'
+        ? (item.config?.cobotShoulderMaxDeg ?? 80)
+        : activeSegDef?.angleKey === 'elbow'
+            ? (item.config?.cobotElbowMaxDeg ?? 166)
+            : (item.config?.cobotWristMaxDeg ?? 180);
+
+    useEffect(() => {
+        if (item.type !== 'cobot') return;
+        const fromConfig = item.config?.cobotTuningSelectedElement ?? 'shoulder';
+        if (fromConfig !== activeSegment) setActiveSegment(fromConfig);
+    }, [item.id, item.type, item.config?.cobotTuningSelectedElement]);
 
     return (
         <div className="flex flex-col gap-3 w-full">
@@ -177,6 +575,343 @@ const TransformPanel = ({ item, updateItem, isDraft, snapStep, heightStep, onCan
                     <RangeSlider label="WIDTH" min={0.5} max={4} step={snapStep} value={item.config?.machineSize?.[0] || item.config?.beltSize?.[0] || item.config?.tableSize?.[0] || 2.5} onChange={(v) => patchSize(0, v)} />
                     <RangeSlider label="DEPTH" min={0.5} max={4} step={snapStep} value={item.config?.machineSize?.[1] || item.config?.beltSize?.[1] || item.config?.tableSize?.[1] || 2.5} onChange={(v) => patchSize(1, v)} />
                     <RangeSlider label="HEIGHT" min={0.1} max={1.5} step={heightStep} value={item.config?.machineHeight || item.config?.beltHeight || item.config?.tableHeight || (item.type === 'pile' ? 0.7 : 0.538)} onChange={(v) => patchHeight(v)} />
+                </div>
+            )}
+            {item.type === 'cobot' && (
+                <div className="flex flex-col gap-2 rounded border border-cyan-500/30 bg-cyan-500/5 p-2">
+                    <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-cyan-200">ARM GEOMETRY (SEGMENT GROUPS)</span>
+                        <button
+                            type="button"
+                            onClick={() => setShowSegmentTuning(v => !v)}
+                            className="rounded border border-cyan-500/45 bg-cyan-500/20 px-2 h-6 text-[9px] font-bold text-cyan-100 hover:bg-cyan-500/30"
+                        >
+                            {showSegmentTuning ? '☰ HIDE SEGMENTS' : '☰ SEGMENTS'}
+                        </button>
+                    </div>
+                    {showSegmentTuning && (
+                        <div className="flex flex-col gap-2">
+                            <div className="grid grid-cols-4 gap-1">
+                                {(['shoulder', 'elbow', 'wrist', 'shoulder_joint', 'elbow_joint', 'wrist_joint', 'pedestal', 'base'] as const).map(seg => (
+                                    <button
+                                        key={seg}
+                                        type="button"
+                                        onClick={() => {
+                                            setActiveSegment(seg);
+                                            updateItem({ config: { ...item.config, cobotTuningSelectedElement: seg } });
+                                        }}
+                                        className={`h-6 rounded border text-[9px] font-bold ${activeSegment === seg ? 'border-cyan-400 bg-cyan-500/25 text-cyan-100' : 'border-gray-700 bg-gray-900/70 text-gray-300 hover:bg-gray-800'}`}
+                                    >
+                                        {segmentDefs[seg].label}
+                                    </button>
+                                ))}
+                            </div>
+                            <div className="rounded border border-cyan-500/25 bg-cyan-500/5 p-2 flex flex-col gap-2">
+                                <span className="text-[10px] font-bold text-cyan-100">{activeSegDef.label} CONTROLS</span>
+                                {(activeSegDef.lenKey || activeSegDef.diaKey || activeSegDef.jointDiaKey || activeSegDef.jointLenKey || activeSegDef.toolJointDiaKey || activeSegDef.toolJointLenKey) && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {activeSegDef.lenKey && (
+                                            <RangeSlider
+                                                label={`${activeSegDef.label.toUpperCase()} LEN`}
+                                                min={activeSegDef.minLen}
+                                                max={activeSegDef.maxLen}
+                                                step={0.02}
+                                                value={(item.config?.[activeSegDef.lenKey] as number | undefined) ?? activeSegDef.defaultLen}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.lenKey]: v } })}
+                                            />
+                                        )}
+                                        {activeSegDef.diaKey && (
+                                            <RangeSlider
+                                                label={`${activeSegDef.label.toUpperCase()} DIA`}
+                                                min={0.08}
+                                                max={0.7}
+                                                step={0.01}
+                                                value={(item.config?.[activeSegDef.diaKey] as number | undefined) ?? activeSegDef.defaultDia}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.diaKey]: v } })}
+                                            />
+                                        )}
+                                        {activeSegDef.jointDiaKey && (
+                                            <RangeSlider
+                                                label="JOINT DIA"
+                                                min={0.12}
+                                                max={0.9}
+                                                step={0.01}
+                                                value={(item.config?.[activeSegDef.jointDiaKey] as number | undefined) ?? activeSegDef.defaultDia}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.jointDiaKey]: v } })}
+                                            />
+                                        )}
+                                        {activeSegDef.jointLenKey && (
+                                            <RangeSlider
+                                                label="JOINT LEN"
+                                                min={activeSegDef.minLen ?? 0.12}
+                                                max={activeSegDef.maxLen ?? 1.2}
+                                                step={0.01}
+                                                value={(item.config?.[activeSegDef.jointLenKey] as number | undefined) ?? activeSegDef.defaultLen}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.jointLenKey]: v } })}
+                                            />
+                                        )}
+                                        {activeSegDef.toolJointDiaKey && (
+                                            <RangeSlider
+                                                label="TOOL JOINT DIA"
+                                                min={0.1}
+                                                max={0.7}
+                                                step={0.01}
+                                                value={(item.config?.[activeSegDef.toolJointDiaKey] as number | undefined) ?? activeSegDef.defaultToolDia}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.toolJointDiaKey]: v } })}
+                                            />
+                                        )}
+                                        {activeSegDef.toolJointLenKey && (
+                                            <RangeSlider
+                                                label="TOOL JOINT LEN"
+                                                min={0.08}
+                                                max={0.7}
+                                                step={0.01}
+                                                value={(item.config?.[activeSegDef.toolJointLenKey] as number | undefined) ?? activeSegDef.defaultToolLen}
+                                                onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.toolJointLenKey]: v } })}
+                                            />
+                                        )}
+                                    </div>
+                                )}
+                                {activeSegDef.angleKey && (
+                                    <TriRangeSlider
+                                        label={`${activeSegDef.label.toUpperCase()} ° (MIN / DEF / MAX)`}
+                                        min={-180}
+                                        max={180}
+                                        step={1}
+                                        minVal={activeAngleMin}
+                                        defVal={activeAngleDef}
+                                        maxVal={activeAngleMax}
+                                        onChange={(handle, v) => patchJointAngles(activeSegDef.angleKey, handle, v)}
+                                    />
+                                )}
+                                {(activeSegDef.posX || activeSegDef.posY || activeSegDef.posZ) && (
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <RangeSlider
+                                            label="POS X"
+                                            min={-0.6}
+                                            max={0.6}
+                                            step={0.01}
+                                            value={(item.config?.[activeSegDef.posX] as number | undefined) ?? activeSegDef.defaultPosX ?? 0}
+                                            onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.posX]: v } })}
+                                        />
+                                        <RangeSlider
+                                            label="POS Y"
+                                            min={-0.6}
+                                            max={0.6}
+                                            step={0.01}
+                                            value={(item.config?.[activeSegDef.posY] as number | undefined) ?? activeSegDef.defaultPosY ?? 0}
+                                            onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.posY]: v } })}
+                                        />
+                                        <RangeSlider
+                                            label="POS Z"
+                                            min={-0.6}
+                                            max={0.6}
+                                            step={0.01}
+                                            value={(item.config?.[activeSegDef.posZ] as number | undefined) ?? activeSegDef.defaultPosZ ?? 0}
+                                            onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.posZ]: v } })}
+                                        />
+                                    </div>
+                                )}
+                                {activeSegDef.pedestalHeightKey && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <RangeSlider
+                                            label="PEDESTAL HEIGHT"
+                                            min={0.18}
+                                            max={0.8}
+                                            step={0.01}
+                                            value={(item.config?.[activeSegDef.pedestalHeightKey] as number | undefined) ?? activeSegDef.defaultPedestalHeight}
+                                            onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.pedestalHeightKey]: v } })}
+                                        />
+                                        <RangeSlider
+                                            label="PEDESTAL SCALE"
+                                            min={0.6}
+                                            max={1.8}
+                                            step={0.01}
+                                            value={(item.config?.[activeSegDef.pedestalRadiusScaleKey] as number | undefined) ?? activeSegDef.defaultPedestalScale}
+                                            onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.pedestalRadiusScaleKey]: v } })}
+                                        />
+                                    </div>
+                                )}
+                                {activeSegDef.baseRadiusScaleKey && (
+                                    <RangeSlider
+                                        label="BASE RING SCALE"
+                                        min={0.6}
+                                        max={1.8}
+                                        step={0.01}
+                                        value={(item.config?.[activeSegDef.baseRadiusScaleKey] as number | undefined) ?? activeSegDef.defaultBaseScale}
+                                        onChange={(v) => updateItem({ config: { ...item.config, [activeSegDef.baseRadiusScaleKey]: v } })}
+                                    />
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    <div className="grid grid-cols-3 gap-2">
+                        <button
+                            type="button"
+                            onClick={() => applyCobotPreset({
+                                cobotUpperArmLength: 1.15,
+                                cobotForearmLength: 0.9,
+                                cobotWristLength: 0.35,
+                                cobotUpperArmDiameter: 0.28,
+                                cobotForearmDiameter: 0.24,
+                                cobotWristDiameter: 0.16,
+                                cobotShoulderMinDeg: -92,
+                                cobotShoulderDefDeg: -10,
+                                cobotShoulderMaxDeg: 70,
+                                cobotElbowMinDeg: 18,
+                                cobotElbowDefDeg: 88,
+                                cobotElbowMaxDeg: 160,
+                                cobotWristMinDeg: -180,
+                                cobotWristDefDeg: -78,
+                                cobotWristMaxDeg: 180,
+                                cobotShoulderVisualOffsetX: 0,
+                                cobotShoulderVisualOffsetY: 0,
+                                cobotShoulderVisualOffsetZ: 0,
+                                cobotElbowVisualOffsetX: 0.15,
+                                cobotElbowVisualOffsetY: 0,
+                                cobotElbowVisualOffsetZ: 0,
+                                cobotWristVisualOffsetX: 0,
+                                cobotWristVisualOffsetY: 0,
+                                cobotWristVisualOffsetZ: 0,
+                                cobotShoulderJointDiameter: 0.4,
+                                cobotElbowJointDiameter: 0.4,
+                                cobotWristJointDiameter: 0.26,
+                                cobotToolJointDiameter: 0.22,
+                                cobotShoulderJointLength: 0.38,
+                                cobotElbowJointLength: 0.36,
+                                cobotWristJointLength: 0.24,
+                                cobotToolJointLength: 0.2,
+                                cobotShoulderJointOffsetX: 0,
+                                cobotShoulderJointOffsetY: 0,
+                                cobotShoulderJointOffsetZ: 0,
+                                cobotElbowJointOffsetX: 0,
+                                cobotElbowJointOffsetY: 0,
+                                cobotElbowJointOffsetZ: 0,
+                                cobotWristJointOffsetX: 0,
+                                cobotWristJointOffsetY: 0,
+                                cobotWristJointOffsetZ: 0,
+                                cobotPedestalHeight: 0.28,
+                                cobotPedestalRadiusScale: 0.95,
+                                cobotBaseRingRadiusScale: 0.95,
+                            })}
+                            className="rounded border border-gray-700 bg-gray-900/70 text-gray-200 hover:bg-gray-800 text-[10px] font-bold h-7"
+                        >
+                            Compact
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => applyCobotPreset({
+                                cobotUpperArmLength: 1.8,
+                                cobotForearmLength: 1.38,
+                                cobotWristLength: 0.56,
+                                cobotUpperArmDiameter: 0.34,
+                                cobotForearmDiameter: 0.26,
+                                cobotWristDiameter: 0.2,
+                                cobotShoulderMinDeg: -77,
+                                cobotShoulderDefDeg: 0,
+                                cobotShoulderMaxDeg: 80,
+                                cobotElbowMinDeg: 13,
+                                cobotElbowDefDeg: 90,
+                                cobotElbowMaxDeg: 166,
+                                cobotWristMinDeg: -180,
+                                cobotWristDefDeg: -90,
+                                cobotWristMaxDeg: 180,
+                                cobotShoulderVisualOffsetX: 0,
+                                cobotShoulderVisualOffsetY: 0,
+                                cobotShoulderVisualOffsetZ: 0,
+                                cobotElbowVisualOffsetX: 0.18,
+                                cobotElbowVisualOffsetY: 0,
+                                cobotElbowVisualOffsetZ: 0,
+                                cobotWristVisualOffsetX: 0,
+                                cobotWristVisualOffsetY: 0,
+                                cobotWristVisualOffsetZ: 0,
+                                cobotShoulderJointDiameter: 0.44,
+                                cobotElbowJointDiameter: 0.44,
+                                cobotWristJointDiameter: 0.3,
+                                cobotToolJointDiameter: 0.26,
+                                cobotShoulderJointLength: 0.44,
+                                cobotElbowJointLength: 0.44,
+                                cobotWristJointLength: 0.3,
+                                cobotToolJointLength: 0.26,
+                                cobotShoulderJointOffsetX: 0,
+                                cobotShoulderJointOffsetY: 0,
+                                cobotShoulderJointOffsetZ: 0,
+                                cobotElbowJointOffsetX: 0,
+                                cobotElbowJointOffsetY: 0,
+                                cobotElbowJointOffsetZ: 0,
+                                cobotWristJointOffsetX: 0,
+                                cobotWristJointOffsetY: 0,
+                                cobotWristJointOffsetZ: 0,
+                                cobotPedestalHeight: 0.3,
+                                cobotPedestalRadiusScale: 1,
+                                cobotBaseRingRadiusScale: 1,
+                            })}
+                            className="rounded border border-cyan-500/45 bg-cyan-500/20 text-cyan-100 hover:bg-cyan-500/30 text-[10px] font-bold h-7"
+                        >
+                            Balanced
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => applyCobotPreset({
+                                cobotUpperArmLength: 2.7,
+                                cobotForearmLength: 2.35,
+                                cobotWristLength: 1.2,
+                                cobotUpperArmDiameter: 0.46,
+                                cobotForearmDiameter: 0.36,
+                                cobotWristDiameter: 0.28,
+                                cobotShoulderMinDeg: -108,
+                                cobotShoulderDefDeg: 8,
+                                cobotShoulderMaxDeg: 90,
+                                cobotElbowMinDeg: 10,
+                                cobotElbowDefDeg: 96,
+                                cobotElbowMaxDeg: 172,
+                                cobotWristMinDeg: -180,
+                                cobotWristDefDeg: -98,
+                                cobotWristMaxDeg: 180,
+                                cobotShoulderVisualOffsetX: 0,
+                                cobotShoulderVisualOffsetY: 0,
+                                cobotShoulderVisualOffsetZ: 0,
+                                cobotElbowVisualOffsetX: 0.22,
+                                cobotElbowVisualOffsetY: 0,
+                                cobotElbowVisualOffsetZ: 0,
+                                cobotWristVisualOffsetX: 0,
+                                cobotWristVisualOffsetY: 0,
+                                cobotWristVisualOffsetZ: 0,
+                                cobotShoulderJointDiameter: 0.52,
+                                cobotElbowJointDiameter: 0.5,
+                                cobotWristJointDiameter: 0.36,
+                                cobotToolJointDiameter: 0.3,
+                                cobotShoulderJointLength: 0.5,
+                                cobotElbowJointLength: 0.48,
+                                cobotWristJointLength: 0.34,
+                                cobotToolJointLength: 0.3,
+                                cobotShoulderJointOffsetX: 0,
+                                cobotShoulderJointOffsetY: 0,
+                                cobotShoulderJointOffsetZ: 0,
+                                cobotElbowJointOffsetX: 0,
+                                cobotElbowJointOffsetY: 0,
+                                cobotElbowJointOffsetZ: 0,
+                                cobotWristJointOffsetX: 0,
+                                cobotWristJointOffsetY: 0,
+                                cobotWristJointOffsetZ: 0,
+                                cobotPedestalHeight: 0.34,
+                                cobotPedestalRadiusScale: 1.1,
+                                cobotBaseRingRadiusScale: 1.1,
+                            })}
+                            className="rounded border border-emerald-500/45 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 text-[10px] font-bold h-7"
+                        >
+                            Long Reach
+                        </button>
+                    </div>
+                    {applyCobotGeometryToAll && (
+                        <button
+                            type="button"
+                            onClick={() => applyCobotGeometryToAll(currentCobotGeometry())}
+                            className="rounded border border-fuchsia-500/45 bg-fuchsia-500/20 text-fuchsia-100 hover:bg-fuchsia-500/30 text-[10px] font-bold h-7"
+                        >
+                            Apply To All Cobots
+                        </button>
+                    )}
                 </div>
             )}
             {item.type === 'pile' && (
@@ -229,10 +964,11 @@ export const UI: React.FC = () => {
     const masterCameraListTouched = useRef(false);
     const [masterPanelPos, setMasterPanelPos] = useState({ x: 0, y: 0 });
     const [selectionPanelPos, setSelectionPanelPos] = useState({ x: 0, y: 0 });
+    const [toolbarPanelPos, setToolbarPanelPos] = useState({ x: 0, y: 0 });
     const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
     const [canDragPanels, setCanDragPanels] = useState(() => window.innerWidth >= 768);
     const dragRef = useRef<{
-        key: 'master' | 'selection' | null;
+        key: 'master' | 'selection' | 'toolbar' | null;
         pointerId: number | null;
         startX: number;
         startY: number;
@@ -247,8 +983,8 @@ export const UI: React.FC = () => {
         originY: 0,
     });
     const [, setCameraFrameTick] = useState(0);
-    const { 
-        credits, 
+    const {
+        credits,
         score,
         isRunning,
         isPaused,
@@ -290,6 +1026,11 @@ export const UI: React.FC = () => {
     const moduleConfigTypes: ItemType[] = ['sender', 'receiver', 'indexed_receiver', 'pile'];
     const cameras = placedItems.filter(i => i.type === 'camera');
     const cobots = placedItems.filter(i => i.type === 'cobot');
+    const applyCobotGeometryToAll = (geometry: Partial<ItemConfig>) => {
+        for (const cobot of cobots) {
+            updatePlacedItem(cobot.id, { config: { ...cobot.config, ...geometry } });
+        }
+    };
     const selectedMachineState = selectedItem ? machineStates[selectedItem.id] : undefined;
     const selectedLabel = selectedItem?.name || selectedItem?.id || '';
     const teachMinimized = !!teachAction && selectedItem?.type === 'cobot';
@@ -432,12 +1173,16 @@ export const UI: React.FC = () => {
         };
     };
 
-    const startPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+    const startPanelDrag = (key: 'master' | 'selection' | 'toolbar', e: React.PointerEvent<HTMLElement>) => {
         if (!canDragPanels || e.button !== 0) return;
         const targetEl = e.target as HTMLElement;
         const dragHandle = targetEl.closest('[data-drag-handle="true"]');
         if (!dragHandle && targetEl.closest('button, input, select, textarea, a, [data-no-drag="true"]')) return;
-        const pos = key === 'master' ? masterPanelPos : selectionPanelPos;
+        const pos = key === 'master'
+            ? masterPanelPos
+            : key === 'toolbar'
+                ? toolbarPanelPos
+                : selectionPanelPos;
         dragRef.current = {
             key,
             pointerId: e.pointerId,
@@ -449,7 +1194,7 @@ export const UI: React.FC = () => {
         e.currentTarget.setPointerCapture(e.pointerId);
     };
 
-    const movePanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+    const movePanelDrag = (key: 'master' | 'selection' | 'toolbar', e: React.PointerEvent<HTMLElement>) => {
         if (dragRef.current.key !== key || dragRef.current.pointerId !== e.pointerId) return;
         const dx = e.clientX - dragRef.current.startX;
         const dy = e.clientY - dragRef.current.startY;
@@ -458,12 +1203,18 @@ export const UI: React.FC = () => {
             setMasterPanelPos(clamped);
             return;
         }
+        if (key === 'toolbar') {
+            const nextX = Math.max(-420, Math.min(420, dragRef.current.originX + dx));
+            const nextY = Math.max(-260, Math.min(120, dragRef.current.originY + dy));
+            setToolbarPanelPos({ x: nextX, y: nextY });
+            return;
+        }
         const nextX = Math.max(-520, Math.min(520, dragRef.current.originX + dx));
         const nextY = Math.max(-340, Math.min(340, dragRef.current.originY + dy));
         setSelectionPanelPos({ x: nextX, y: nextY });
     };
 
-    const endPanelDrag = (key: 'master' | 'selection', e: React.PointerEvent<HTMLDivElement>) => {
+    const endPanelDrag = (key: 'master' | 'selection' | 'toolbar', e: React.PointerEvent<HTMLElement>) => {
         if (dragRef.current.key !== key || dragRef.current.pointerId !== e.pointerId) return;
         dragRef.current.key = null;
         dragRef.current.pointerId = null;
@@ -610,8 +1361,25 @@ export const UI: React.FC = () => {
     const handleSellSelected = () => {
         if (selectedItem) {
             removePlacedItem(selectedItem.id);
-            setCredits(creditsValue + ITEM_COSTS[selectedItem.type]); 
+            setCredits(creditsValue + ITEM_COSTS[selectedItem.type]);
         }
+    };
+
+    const toggleMachineRunning = () => {
+        if (!selectedItem) return;
+        if (!isRunning) {
+            setIsRunning(true);
+            setIsPaused(false);
+        }
+        const wasStopped = selectedItem.config?.isStopped;
+        updatePlacedItem(selectedItem.id, { 
+            config: { 
+                ...selectedItem.config, 
+                isStopped: !wasStopped,
+                cobotManualControl: false,
+                cobotTuningMode: false
+            } 
+        });
     };
 
     const handleRotateSelected = () => {
@@ -850,50 +1618,79 @@ export const UI: React.FC = () => {
     const cobotArmTarget = selectedItem?.type === 'cobot'
         ? (selectedItem.config?.cobotManualTarget || selectedItem.config?.cobotHomeTarget || defaultCobotArmTarget(selectedItem))
         : null;
+    const activeCobotBounds = selectedItem?.type === 'cobot' ? cobotArmBounds(selectedItem) : null;
 
-    const setCobotManualTarget = (target: [number, number, number], manualControl = true) => {
+    const setCobotManualTarget = (target: [number, number, number], manualControl?: boolean) => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
+        const bounds = cobotArmBounds(selectedItem);
+        const clampedTarget: [number, number, number] = [
+            clampNum(target[0], bounds.xMin, bounds.xMax),
+            clampNum(target[1], bounds.yMin, bounds.yMax),
+            clampNum(target[2], bounds.zMin, bounds.zMax),
+        ];
+        // Moving arm sliders should always drive the arm immediately in stopped mode.
+        const nextManualControl = manualControl ?? true;
         updatePlacedItem(selectedItem.id, {
             config: {
                 ...selectedItem.config,
-                cobotManualTarget: target,
-                cobotManualControl: manualControl,
+                cobotManualTarget: clampedTarget,
+                cobotManualControl: nextManualControl,
+                cobotTuningMode: false,
                 isStopped: false,
             }
         });
     };
 
-    const nudgeCobotArmTarget = (axis: 0 | 1 | 2, delta: number) => {
+    const setCobotArmAxis = (axis: 0 | 1 | 2, value: number) => {
         if (!selectedItem || selectedItem.type !== 'cobot' || !cobotArmTarget) return;
+        const bounds = cobotArmBounds(selectedItem);
         const next = [...cobotArmTarget] as [number, number, number];
-        next[axis] = axis === 1
-            ? Math.max(0.08, Math.min(3.6, next[axis] + delta))
-            : Math.max(selectedItem.position[axis === 0 ? 0 : 2] - 3.2, Math.min(selectedItem.position[axis === 0 ? 0 : 2] + 3.2, next[axis] + delta));
-        setCobotManualTarget(next);
+        if (axis === 0) next[axis] = clampNum(value, bounds.xMin, bounds.xMax);
+        if (axis === 1) next[axis] = clampNum(value, bounds.yMin, bounds.yMax);
+        if (axis === 2) next[axis] = clampNum(value, bounds.zMin, bounds.zMax);
+        setCobotManualTarget(next, true);
     };
 
-    const saveCobotHomeTarget = () => {
+    const addCurrentArmMovePoint = () => {
         if (!selectedItem || selectedItem.type !== 'cobot' || !cobotArmTarget) return;
+        const current = selectedItem.config?.program || [];
+        const nextProgram: ProgramStep[] = [...current, { action: 'move', pos: [...cobotArmTarget] as [number, number, number] }];
         updatePlacedItem(selectedItem.id, {
             config: {
                 ...selectedItem.config,
-                cobotHomeTarget: cobotArmTarget,
-                cobotManualTarget: cobotArmTarget,
-                cobotManualControl: true,
-                isStopped: false,
+                program: nextProgram,
+                uiActiveProgramStepIndex: nextProgram.length - 1,
             }
         });
     };
 
     const goCobotHomeTarget = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
-        setCobotManualTarget(selectedItem.config?.cobotHomeTarget || defaultCobotArmTarget(selectedItem));
+        setCobotManualTarget(selectedItem.config?.cobotHomeTarget || defaultCobotArmTarget(selectedItem), true);
     };
 
     const unlockSelectedCobot = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
         updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, collisionStopped: false, triggerUnlock: Date.now() } });
     };
+
+    useEffect(() => {
+        if (!selectedItem || selectedItem.type !== 'cobot') return;
+        const tuningShouldBeOn = moveModeItemId === selectedItem.id;
+        const tuningIsOn = selectedItem.config?.cobotTuningMode === true;
+        if (tuningShouldBeOn === tuningIsOn) return;
+        const wasManual = selectedItem.config?.cobotManualControl === true;
+        updatePlacedItem(selectedItem.id, {
+            config: {
+                ...selectedItem.config,
+                cobotTuningMode: tuningShouldBeOn,
+                cobotCollisionEnabled: tuningShouldBeOn ? false : true,
+                // Entering tune mode enables manual jog; leaving tune mode keeps user's manual toggle.
+                cobotManualControl: tuningShouldBeOn ? true : wasManual,
+                isStopped: false,
+            }
+        });
+    }, [moveModeItemId, selectedItem?.id, selectedItem?.type, selectedItem?.config?.cobotTuningMode]);
 
     const exportSelectedCobotLog = () => {
         if (!selectedItem || selectedItem.type !== 'cobot') return;
@@ -992,24 +1789,24 @@ export const UI: React.FC = () => {
                             <HelpCircle size={20} className="sm:w-6 sm:h-6" />
                         </button>
                         <div className={`${chromeCardClass} px-3 sm:px-6 py-1.5 sm:py-3 flex items-center gap-2 sm:gap-4`}>
-                        <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
-                            â˜…
+                            <div className="bg-emerald-500/20 text-emerald-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
+                                â˜…
+                            </div>
+                            <div>
+                                <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
+                                <div className="text-lg sm:text-2xl font-black text-white leading-none">{scoreValue}</div>
+                            </div>
                         </div>
-                        <div>
-                            <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Score</div>
-                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{scoreValue}</div>
+                        <div className={`${chromeCardClass} px-3 sm:px-6 py-1.5 sm:py-3 flex items-center gap-2 sm:gap-4`}>
+                            <div className="bg-blue-500/20 text-blue-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
+                                $
+                            </div>
+                            <div>
+                                <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Credits</div>
+                                <div className="text-lg sm:text-2xl font-black text-white leading-none">{creditsValue}</div>
+                            </div>
                         </div>
                     </div>
-                    <div className={`${chromeCardClass} px-3 sm:px-6 py-1.5 sm:py-3 flex items-center gap-2 sm:gap-4`}>
-                        <div className="bg-blue-500/20 text-blue-400 rounded-md w-6 h-6 sm:w-8 sm:h-8 flex items-center justify-center font-bold text-sm sm:text-lg">
-                            $
-                        </div>
-                        <div>
-                            <div className="text-[8px] sm:text-[10px] font-bold text-gray-500 tracking-widest uppercase">Credits</div>
-                            <div className="text-lg sm:text-2xl font-black text-white leading-none">{creditsValue}</div>
-                        </div>
-                    </div>
-                </div>
                     <div
                         className={`absolute right-0 top-[calc(100%+8px)] sm:top-[calc(100%+10px)] z-30 w-[min(360px,calc(100vw-16px))] sm:w-[380px] rounded-xl border border-cyan-500/35 overflow-hidden ${panelFrameClass}`}
                         style={canDragPanels ? { transform: `translate(${masterPanelPos.x}px, ${masterPanelPos.y}px)` } : undefined}
@@ -1241,12 +2038,12 @@ export const UI: React.FC = () => {
                             </div>
                         )}
                     </div>
-            </div>
+                </div>
             </div>
 
             {/* Bottom Area */}
-            <div className={`flex flex-col items-center gap-2 sm:gap-4 pointer-events-auto w-full max-w-full ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+4px)]' : ''}`}>
-                
+            <div className={`flex flex-col items-center gap-2 sm:gap-4 pointer-events-none w-full max-w-full ${isMobile ? 'pb-[calc(env(safe-area-inset-bottom)+4px)]' : ''}`}>
+
                 {draftPlacement ? (
                     <div className={`${panelFrameClass} rounded-xl p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}>
                         <div className="text-sm font-black text-yellow-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
@@ -1266,16 +2063,94 @@ export const UI: React.FC = () => {
                         </div>
                     </div>
                 ) : moveModeItemId && selectedItem && moveModeItemId === selectedItem.id ? (
-                    <div className={`${panelFrameClass} rounded-xl border-blue-500 p-4 flex flex-col gap-3 w-[min(340px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}>
-                        <div className="text-sm font-black text-blue-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2">
-                            <span className="flex items-center gap-2"><Move size={16} /> MOVING {selectedItem.type.toUpperCase()}</span>
+                    <div
+                        className={`${panelFrameClass} rounded-xl border-blue-500 p-4 flex flex-col gap-3 w-[min(380px,calc(100vw-16px))] animate-fade-in pointer-events-auto`}
+                        style={canDragPanels ? { transform: `translate(${selectionPanelPos.x}px, ${selectionPanelPos.y}px)` } : undefined}
+                    >
+                        <div className={`text-sm font-black text-blue-400 tracking-wider flex justify-between items-center border-b border-gray-700 pb-2 ${canDragPanels ? 'cursor-grab active:cursor-grabbing' : ''}`}>
+                            <span className="flex items-center gap-2">
+                                {canDragPanels && (
+                                    <span
+                                        data-drag-handle="true"
+                                        className="text-blue-300/80 font-mono text-xs px-1 cursor-grab active:cursor-grabbing select-none"
+                                        title="Drag panel"
+                                        onPointerDown={(e) => startPanelDrag('selection', e)}
+                                        onPointerMove={(e) => movePanelDrag('selection', e)}
+                                        onPointerUp={(e) => endPanelDrag('selection', e)}
+                                        onPointerCancel={(e) => endPanelDrag('selection', e)}
+                                    >
+                                        :::
+                                    </span>
+                                )}
+                                <Move size={16} />
+                                {selectedItem.type === 'cobot' ? 'TUNING COBOT' : `MOVING ${selectedItem.type.toUpperCase()}`}
+                            </span>
                         </div>
-                        <TransformPanel item={selectedItem} updateItem={(updates) => updatePlacedItem(selectedItem.id, updates)} isDraft={true} snapStep={snapStep} heightStep={heightStep} onCancel={() => { if (moveModeOriginalItem) { updatePlacedItem(selectedItem.id, moveModeOriginalItem); } setMoveModeItemId(null); }} onValidate={() => setMoveModeItemId(null)} />
+                        <TransformPanel
+                            item={selectedItem}
+                            updateItem={(updates) => updatePlacedItem(selectedItem.id, updates)}
+                            isDraft={true}
+                            snapStep={snapStep}
+                            heightStep={heightStep}
+                            applyCobotGeometryToAll={applyCobotGeometryToAll}
+                            onCancel={() => { if (moveModeOriginalItem) { updatePlacedItem(selectedItem.id, moveModeOriginalItem); } setMoveModeItemId(null); }}
+                            onValidate={() => setMoveModeItemId(null)}
+                        />
+                        {selectedItem.type === 'cobot' && cobotArmTarget && (
+                            <div className="rounded-md border border-sky-500/25 bg-sky-950/20 p-2 flex flex-col gap-2">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                        <Move size={12} className="text-sky-200" />
+                                        <span className="text-[9px] font-bold text-sky-100">ARM JOG</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <button
+                                            onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotManualControl: !selectedItem.config?.cobotManualControl, cobotManualTarget: cobotArmTarget, isStopped: false } })}
+                                            className={`h-5 px-1.5 rounded border text-[8px] font-bold ${selectedItem.config?.cobotManualControl ? 'border-sky-300/60 bg-sky-500/20 text-sky-100' : 'border-gray-700 bg-gray-900/60 text-gray-400'}`}
+                                        >
+                                            JOG
+                                        </button>
+                                        <button
+                                            onClick={goCobotHomeTarget}
+                                            className="h-5 px-1.5 rounded border border-gray-700 bg-gray-900/60 text-gray-200 hover:text-white inline-flex items-center gap-1 text-[8px] font-bold"
+                                        >
+                                            <Home size={9} /> HOME
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <RangeSlider
+                                        label="X"
+                                        min={activeCobotBounds ? activeCobotBounds.xMin : selectedItem.position[0] - 4.2}
+                                        max={activeCobotBounds ? activeCobotBounds.xMax : selectedItem.position[0] + 4.2}
+                                        step={0.02}
+                                        value={cobotArmTarget[0]}
+                                        onChange={(v) => setCobotArmAxis(0, v)}
+                                    />
+                                    <RangeSlider
+                                        label="Y"
+                                        min={activeCobotBounds ? activeCobotBounds.yMin : 0.08}
+                                        max={activeCobotBounds ? activeCobotBounds.yMax : 4.2}
+                                        step={0.02}
+                                        value={cobotArmTarget[1]}
+                                        onChange={(v) => setCobotArmAxis(1, v)}
+                                    />
+                                    <RangeSlider
+                                        label="Z"
+                                        min={activeCobotBounds ? activeCobotBounds.zMin : selectedItem.position[2] - 4.2}
+                                        max={activeCobotBounds ? activeCobotBounds.zMax : selectedItem.position[2] + 4.2}
+                                        step={0.02}
+                                        value={cobotArmTarget[2]}
+                                        onChange={(v) => setCobotArmAxis(2, v)}
+                                    />
+                                </div>
+                            </div>
+                        )}
                     </div>
                 ) : selectedItem ? (
                     /* SELECTION PANEL */
                     <div
-                        className={`${panelFrameClass} rounded-xl border ${selectedItem.type === 'cobot' ? 'p-1.5' : 'p-2'} flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'w-[min(520px,calc(100vw-10px))]' : 'w-[min(560px,calc(100vw-12px))]'} ${selectionPanelMaxHClass} overflow-y-auto overscroll-contain animate-fade-in ${statusTone.panel}`}
+                        className={`${panelFrameClass} pointer-events-auto rounded-xl border ${selectedItem.type === 'cobot' ? 'p-1.5' : 'p-2'} flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'w-[min(520px,calc(100vw-10px))]' : 'w-[min(560px,calc(100vw-12px))]'} ${selectionPanelMaxHClass} overflow-y-auto overscroll-contain animate-fade-in ${statusTone.panel}`}
                         style={{ transform: `translate(${selectionPanelPos.x}px, ${selectionPanelPos.y}px)` }}
                     >
                         <div
@@ -1349,8 +2224,8 @@ export const UI: React.FC = () => {
                                         >
                                             <Cpu size={11} />
                                         </button>
-                                        <button 
-                                            onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, isStopped: !selectedItem.config?.isStopped } })}
+                                        <button
+                                            onClick={toggleMachineRunning}
                                             className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
                                             title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
                                         >
@@ -1395,224 +2270,225 @@ export const UI: React.FC = () => {
                             <div className="flex flex-col gap-1.5 flex-1">
                                 <div className={`rounded-lg overflow-hidden flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'bg-transparent px-0 pb-0' : 'bg-gray-800/50 border border-gray-700 px-2 pb-2'}`}>
                                     <div className={`flex flex-col gap-1.5 w-full ${selectedItem.type === 'cobot' ? '' : 'pt-2'}`}>
-                                {selectedItem.type === 'sender' && !teachMinimized && (
-                                    <div className="flex flex-col gap-2 w-full">
-                                        <RangeSlider label="SPAWN INTERVAL" min={0.5} max={10} step={0.5} value={selectedItem.config?.speed || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
-                                        <div className="flex items-center justify-between mt-1 gap-2">
-                                            <span className="text-xs font-bold text-gray-500">PART TEMPLATE CLASS</span>
-                                            <button
-                                                onClick={openPartCreator}
-                                                className="px-2 py-1 rounded border border-cyan-600/50 bg-cyan-500/10 text-cyan-200 text-[10px] font-bold hover:bg-cyan-500/20"
-                                            >
-                                                âœ¦ PART CREATOR
-                                            </button>
-                                        </div>
-                                        <select
-                                            className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
-                                            value={selectedItem.config?.spawnTemplateId || 'any'}
-                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnTemplateId: e.target.value } })}
-                                        >
-                                            <option value="any">All Templates (Random)</option>
-                                            {partTemplates.map(tpl => (
-                                                <option key={tpl.id} value={tpl.id}>
-                                                    {tpl.name} â€” {tpl.shape}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        {/* Show the selected template's color/size pools */}
-                                        {(() => {
-                                            const tid = selectedItem.config?.spawnTemplateId;
-                                            const tpl = tid && tid !== 'any' ? partTemplates.find(t => t.id === tid) : null;
-                                            if (!tpl) return (
-                                                <p className="text-[10px] text-gray-500 italic">Spawning randomly from all templates. Configure pools in Part Creator.</p>
-                                            );
-                                            const colors = tpl.spawnColors?.length ? tpl.spawnColors : [tpl.color];
-                                            const sizes = tpl.spawnSizes?.length ? tpl.spawnSizes : [tpl.size];
-                                            return (
-                                                <div className="rounded-lg bg-gray-800/60 border border-gray-700 p-2 flex flex-col gap-1.5">
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="text-[10px] font-bold text-gray-500 uppercase">Color pool</span>
-                                                        <div className="flex gap-1">
-                                                            {colors.map(c => <span key={c} className="w-4 h-4 rounded-full border border-white/20" style={{backgroundColor: c}} />)}
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="text-[10px] font-bold text-gray-500 uppercase">Size pool</span>
-                                                        <div className="flex gap-1">
-                                                            {sizes.map(s => <span key={s} className="text-[10px] bg-gray-700 rounded px-1.5 py-0.5 text-gray-200 font-bold uppercase">{s}</span>)}
-                                                        </div>
-                                                    </div>
+                                        {selectedItem.type === 'sender' && !teachMinimized && (
+                                            <div className="flex flex-col gap-2 w-full">
+                                                <RangeSlider label="SPAWN INTERVAL" min={0.5} max={10} step={0.5} value={selectedItem.config?.speed || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+                                                <div className="flex items-center justify-between mt-1 gap-2">
+                                                    <span className="text-xs font-bold text-gray-500">PART TEMPLATE CLASS</span>
+                                                    <button
+                                                        onClick={openPartCreator}
+                                                        className="px-2 py-1 rounded border border-cyan-600/50 bg-cyan-500/10 text-cyan-200 text-[10px] font-bold hover:bg-cyan-500/20"
+                                                    >
+                                                        âœ¦ PART CREATOR
+                                                    </button>
                                                 </div>
-                                            );
-                                        })()}
-                                    </div>
-                                )}
-                                {selectedItem.type === 'belt' && !teachMinimized && (
-                                    <div className="flex flex-col gap-3 w-full">
-                                        <RangeSlider label="BELT SPEED" min={0.5} max={5} step={0.5} value={selectedItem.config?.speed || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
-                                                <span className="text-[10px] font-bold text-gray-500">LEFT RAIL</span>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={(selectedItem.config?.beltBorders || [true, true])[0]}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltBorders: [e.target.checked, (selectedItem.config?.beltBorders || [true, true])[1]] } })}
-                                                />
-                                            </label>
-                                            <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
-                                                <span className="text-[10px] font-bold text-gray-500">RIGHT RAIL</span>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={(selectedItem.config?.beltBorders || [true, true])[1]}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltBorders: [(selectedItem.config?.beltBorders || [true, true])[0], e.target.checked] } })}
-                                                />
-                                            </label>
-                                        </div>
-                                    </div>
-                                )}
-                                {selectedItem.type === 'table' && !teachMinimized && (
-                                    <div className="flex flex-col gap-3 w-full">
-                                        <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end">
-                                            <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
-                                            <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
-                                            <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-7">
-                                                <span className="text-[10px] font-bold text-gray-500">SHOW</span>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedItem.config?.showTableGrid !== false}
-                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showTableGrid: e.target.checked } })}
-                                                />
-                                            </label>
-                                        </div>
-                                    </div>
-                                )}
-                                                {selectedItem.type === 'cobot' && !teachMinimized && (
-                                                    <>
-                                                        {selectedItem.config?.collisionStopped && (
-                                                            <div className="bg-red-900/30 border border-red-500 rounded p-2 mb-3">
-                                                                <span className="text-red-400 text-[10px] font-bold block mb-1">âš ï¸ SAFETY STOP ENGAGED</span>
-                                                                <button 
-                                                                    onClick={unlockSelectedCobot}
-                                                                    className="w-full bg-red-600 hover:bg-red-500 text-white rounded py-1 text-[10px] font-bold"
-                                                                >
-                                                                    UNLOCK COBOT
-                                                                </button>
+                                                <select
+                                                    className="bg-gray-800 text-white text-sm rounded p-1 border border-gray-600 outline-none"
+                                                    value={selectedItem.config?.spawnTemplateId || 'any'}
+                                                    onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, spawnTemplateId: e.target.value } })}
+                                                >
+                                                    <option value="any">All Templates (Random)</option>
+                                                    {partTemplates.map(tpl => (
+                                                        <option key={tpl.id} value={tpl.id}>
+                                                            {tpl.name} â€” {tpl.shape}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {/* Show the selected template's color/size pools */}
+                                                {(() => {
+                                                    const tid = selectedItem.config?.spawnTemplateId;
+                                                    const tpl = tid && tid !== 'any' ? partTemplates.find(t => t.id === tid) : null;
+                                                    if (!tpl) return (
+                                                        <p className="text-[10px] text-gray-500 italic">Spawning randomly from all templates. Configure pools in Part Creator.</p>
+                                                    );
+                                                    const colors = tpl.spawnColors?.length ? tpl.spawnColors : [tpl.color];
+                                                    const sizes = tpl.spawnSizes?.length ? tpl.spawnSizes : [tpl.size];
+                                                    return (
+                                                        <div className="rounded-lg bg-gray-800/60 border border-gray-700 p-2 flex flex-col gap-1.5">
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="text-[10px] font-bold text-gray-500 uppercase">Color pool</span>
+                                                                <div className="flex gap-1">
+                                                                    {colors.map(c => <span key={c} className="w-4 h-4 rounded-full border border-white/20" style={{ backgroundColor: c }} />)}
+                                                                </div>
                                                             </div>
-                                                        )}
-                                                        <div className="rounded-md overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-gray-900/55">
-                                                            <button
-                                                                onClick={() => toggleCobotSection('transform')}
-                                                                className={`w-full flex items-center justify-between px-1.5 py-1 text-left hover:bg-fuchsia-900/20 transition-colors ${showTransforms ? 'bg-fuchsia-900/20' : ''}`}
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="text-[10px] font-bold text-gray-500 uppercase">Size pool</span>
+                                                                <div className="flex gap-1">
+                                                                    {sizes.map(s => <span key={s} className="text-[10px] bg-gray-700 rounded px-1.5 py-0.5 text-gray-200 font-bold uppercase">{s}</span>)}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        )}
+                                        {selectedItem.type === 'belt' && !teachMinimized && (
+                                            <div className="flex flex-col gap-3 w-full">
+                                                <RangeSlider label="BELT SPEED" min={0.5} max={5} step={0.5} value={selectedItem.config?.speed || 2} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
+                                                        <span className="text-[10px] font-bold text-gray-500">LEFT RAIL</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={(selectedItem.config?.beltBorders || [true, true])[0]}
+                                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltBorders: [e.target.checked, (selectedItem.config?.beltBorders || [true, true])[1]] } })}
+                                                        />
+                                                    </label>
+                                                    <label className="flex items-center justify-between rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5">
+                                                        <span className="text-[10px] font-bold text-gray-500">RIGHT RAIL</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={(selectedItem.config?.beltBorders || [true, true])[1]}
+                                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, beltBorders: [(selectedItem.config?.beltBorders || [true, true])[0], e.target.checked] } })}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {selectedItem.type === 'table' && !teachMinimized && (
+                                            <div className="flex flex-col gap-3 w-full">
+                                                <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end">
+                                                    <RangeSlider label="GRID W" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[0] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [v, selectedItem.config?.tableGrid?.[1] || 3] } })} />
+                                                    <RangeSlider label="GRID D" min={1} max={6} step={1} value={selectedItem.config?.tableGrid?.[1] || 3} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, tableGrid: [selectedItem.config?.tableGrid?.[0] || 3, v] } })} />
+                                                    <label className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900/40 px-3 py-1.5 h-7">
+                                                        <span className="text-[10px] font-bold text-gray-500">SHOW</span>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedItem.config?.showTableGrid !== false}
+                                                            onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, showTableGrid: e.target.checked } })}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {selectedItem.type === 'cobot' && !teachMinimized && (
+                                            <>
+                                                {selectedItem.config?.collisionStopped && (
+                                                    <div className="bg-red-900/30 border border-red-500 rounded p-2 mb-3">
+                                                        <span className="text-red-400 text-[10px] font-bold block mb-1">âš ï¸  SAFETY STOP ENGAGED</span>
+                                                        <button
+                                                            onClick={unlockSelectedCobot}
+                                                            className="w-full bg-red-600 hover:bg-red-500 text-white rounded py-1 text-[10px] font-bold"
+                                                        >
+                                                            UNLOCK COBOT
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                <div className="rounded-md overflow-hidden mb-1 mt-1 border border-fuchsia-500/35 bg-gray-900/55">
+                                                    <button
+                                                        onClick={() => toggleCobotSection('transform')}
+                                                        className={`w-full flex items-center justify-between px-1.5 py-1 text-left hover:bg-fuchsia-900/20 transition-colors ${showTransforms ? 'bg-fuchsia-900/20' : ''}`}
+                                                    >
+                                                        <div className="flex items-center gap-2">
+                                                            <SlidersHorizontal size={12} className="text-fuchsia-300" />
+                                                            <span className="text-[10px] text-fuchsia-100 font-bold">TRANSFORM & KINEMATICS</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span
+                                                                onClick={(e) => {
+                                                                    e.preventDefault();
+                                                                    e.stopPropagation();
+                                                                    setCobotOverlay({ showArmRange: !showArmRangeOverlay });
+                                                                }}
+                                                                className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showArmRangeOverlay ? 'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
+                                                                title={showArmRangeOverlay ? 'Hide range overlay' : 'Show range overlay'}
                                                             >
-                                                                <div className="flex items-center gap-2">
-                                                                    <SlidersHorizontal size={12} className="text-fuchsia-300" />
-                                                                    <span className="text-[10px] text-fuchsia-100 font-bold">TRANSFORM & KINEMATICS</span>
-                                                                </div>
-                                                                <div className="flex items-center gap-1.5">
-                                                                    <span
-                                                                        onClick={(e) => {
-                                                                            e.preventDefault();
-                                                                            e.stopPropagation();
-                                                                            setCobotOverlay({ showArmRange: !showArmRangeOverlay });
-                                                                        }}
-                                                                        className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showArmRangeOverlay ? 'border-fuchsia-400/40 bg-fuchsia-500/10 text-fuchsia-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
-                                                                        title={showArmRangeOverlay ? 'Hide range overlay' : 'Show range overlay'}
-                                                                    >
-                                                                        <Target size={9} />
-                                                                        RANGE
-                                                                    </span>
-                                                                    {showTransforms ? <ChevronDown size={12} className="text-fuchsia-200" /> : <ChevronRight size={12} className="text-fuchsia-200" />}
-                                                                </div>
-                                                            </button>
-                                                            {showTransforms && (
-                                                                <div className="px-1.5 pb-1.5 pt-1.5 flex flex-col gap-1.5">
-                                                                    <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
+                                                                <Target size={9} />
+                                                                RANGE {activeCobotBounds ? `${activeCobotBounds.planarReach.toFixed(2)}m` : ''}
+                                                            </span>
+                                                            {showTransforms ? <ChevronDown size={12} className="text-fuchsia-200" /> : <ChevronRight size={12} className="text-fuchsia-200" />}
+                                                        </div>
+                                                    </button>
+                                                    {showTransforms && (
+                                                        <div className="px-1.5 pb-1.5 pt-1.5 flex flex-col gap-1.5">
+                                                            <RangeSlider label="ARM SPEED" min={0.5} max={3} step={0.1} value={selectedItem.config?.speed || 1} onChange={(v) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, speed: v } })} />
 
-                                                                    {cobotArmTarget && (
-                                                                        <div className="rounded-md border border-sky-500/25 bg-sky-950/20 p-1.5 flex flex-col gap-1.5">
-                                                                            <div className="flex items-center justify-between gap-2">
-                                                                                <div className="flex items-center gap-1.5">
-                                                                                    <Move size={11} className="text-sky-200" />
-                                                                                    <span className="text-[9px] font-bold text-sky-100">ARM POSE</span>
-                                                                                </div>
-                                                                                <div className="flex items-center gap-1">
-                                                                                    <button
-                                                                                        onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotManualControl: !selectedItem.config?.cobotManualControl, cobotManualTarget: cobotArmTarget, isStopped: false } })}
-                                                                                        className={`h-5 px-1.5 rounded border text-[8px] font-bold ${selectedItem.config?.cobotManualControl ? 'border-sky-300/60 bg-sky-500/20 text-sky-100' : 'border-gray-700 bg-gray-900/60 text-gray-400'}`}
-                                                                                        title="Enable manual arm jog target"
-                                                                                    >
-                                                                                        JOG
-                                                                                    </button>
-                                                                                    <button
-                                                                                        onClick={goCobotHomeTarget}
-                                                                                        className="h-5 px-1.5 rounded border border-gray-700 bg-gray-900/60 text-gray-200 hover:text-white inline-flex items-center gap-1 text-[8px] font-bold"
-                                                                                        title="Move arm to saved home pose"
-                                                                                    >
-                                                                                        <Home size={9} /> HOME
-                                                                                    </button>
-                                                                                </div>
-                                                                            </div>
-                                                                            <div className="grid grid-cols-3 gap-1">
-                                                                                {(['X', 'Y', 'Z'] as const).map((axis, axisIdx) => (
-                                                                                    <div key={axis} className="rounded bg-gray-950/45 border border-gray-800 px-1 py-1">
-                                                                                        <div className="flex items-center justify-between mb-1">
-                                                                                            <span className="text-[8px] font-bold text-gray-500">{axis}</span>
-                                                                                            <span className="text-[9px] font-mono font-bold text-sky-200">{cobotArmTarget[axisIdx].toFixed(2)}</span>
-                                                                                        </div>
-                                                                                        <div className="grid grid-cols-2 gap-1">
-                                                                                            <button
-                                                                                                onClick={() => nudgeCobotArmTarget(axisIdx as 0 | 1 | 2, axisIdx === 1 ? -0.05 : -0.1)}
-                                                                                                className="h-5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold"
-                                                                                            >
-                                                                                                -
-                                                                                            </button>
-                                                                                            <button
-                                                                                                onClick={() => nudgeCobotArmTarget(axisIdx as 0 | 1 | 2, axisIdx === 1 ? 0.05 : 0.1)}
-                                                                                                className="h-5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold"
-                                                                                            >
-                                                                                                +
-                                                                                            </button>
-                                                                                        </div>
-                                                                                    </div>
-                                                                                ))}
-                                                                            </div>
-                                                                            <div className="grid grid-cols-2 gap-1">
-                                                                                <button
-                                                                                    onClick={() => setCobotManualTarget(defaultCobotArmTarget(selectedItem))}
-                                                                                    className="h-6 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 text-[9px] font-bold"
-                                                                                >
-                                                                                    CENTER ARM
-                                                                                </button>
-                                                                                <button
-                                                                                    onClick={saveCobotHomeTarget}
-                                                                                    className="h-6 rounded bg-sky-700/60 hover:bg-sky-600 text-sky-50 text-[9px] font-bold"
-                                                                                >
-                                                                                    SAVE AS HOME
-                                                                                </button>
-                                                                            </div>
+                                                            {cobotArmTarget && (
+                                                                <div className="rounded-md border border-sky-500/25 bg-sky-950/20 p-1.5 flex flex-col gap-1.5">
+                                                                    <div className="flex items-center justify-between gap-2">
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <Move size={11} className="text-sky-200" />
+                                                                            <span className="text-[9px] font-bold text-sky-100">ARM POSE</span>
                                                                         </div>
-                                                                    )}
-
-                                                                    <div className="flex gap-2 w-full mt-1">
-                                                                        <div className="flex flex-col gap-0.5 w-1/2">
-                                                                            <span className="text-[9px] font-bold text-gray-500">STACK GRID <span className="font-normal text-gray-600">({((selectedItem.config?.stackMatrix?.[0] || 3) * (selectedItem.config?.stackMatrix?.[1] || 3)) - 1} slots)</span></span>
-                                                                            <div className="flex items-center gap-1">
-                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 3] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
-                                                                                <span className="text-gray-500 text-[10px]">x</span>
-                                                                                <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 3, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
-                                                                            </div>
-                                                                        </div>
-                                                                        <div className="flex flex-col gap-0.5 w-1/2">
-                                                                            <span className="text-[9px] font-bold text-gray-500">MAX STACK H.</span>
-                                                                            <input type="number" min="1" max="20" value={selectedItem.config?.stackMax || 10} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMax: parseInt(e.target.value) || 10 } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                        <div className="flex items-center gap-1">
+                                                                            <button
+                                                                                onClick={toggleMachineRunning}
+                                                                                className={`h-5 px-1.5 rounded border transition-colors ${selectedItem.config?.isStopped || selectedItem.config?.cobotManualControl ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20' : 'border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20'}`}
+                                                                            >
+                                                                                {(selectedItem.config?.isStopped || selectedItem.config?.cobotManualControl) ? <Play size={10} fill="currentColor" /> : <Square size={10} fill="currentColor" />}
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotManualControl: !selectedItem.config?.cobotManualControl, cobotManualTarget: cobotArmTarget, isStopped: false } })}
+                                                                                className={`h-5 px-1.5 rounded border text-[8px] font-bold ${selectedItem.config?.cobotManualControl ? 'border-sky-300/60 bg-sky-500/20 text-sky-100' : 'border-gray-700 bg-gray-900/60 text-gray-400'}`}
+                                                                                title="Enable manual arm jog target"
+                                                                            >
+                                                                                JOG
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={goCobotHomeTarget}
+                                                                                className="h-5 px-1.5 rounded border border-gray-700 bg-gray-900/60 text-gray-200 hover:text-white inline-flex items-center gap-1 text-[8px] font-bold"
+                                                                                title="Move arm to saved home pose"
+                                                                            >
+                                                                                <Home size={9} /> HOME
+                                                                            </button>
                                                                         </div>
                                                                     </div>
+                                                                    <div className="grid grid-cols-3 gap-2">
+                                                                        <RangeSlider
+                                                                            label="X SLIDE"
+                                                                            min={activeCobotBounds ? activeCobotBounds.xMin : selectedItem.position[0] - 4.2}
+                                                                            max={activeCobotBounds ? activeCobotBounds.xMax : selectedItem.position[0] + 4.2}
+                                                                            step={0.02}
+                                                                            value={cobotArmTarget[0]}
+                                                                            onChange={(v) => setCobotArmAxis(0, v)}
+                                                                        />
+                                                                        <RangeSlider
+                                                                            label="Y SLIDE"
+                                                                            min={activeCobotBounds ? activeCobotBounds.yMin : 0.08}
+                                                                            max={activeCobotBounds ? activeCobotBounds.yMax : 4.2}
+                                                                            step={0.02}
+                                                                            value={cobotArmTarget[1]}
+                                                                            onChange={(v) => setCobotArmAxis(1, v)}
+                                                                        />
+                                                                        <RangeSlider
+                                                                            label="Z SLIDE"
+                                                                            min={activeCobotBounds ? activeCobotBounds.zMin : selectedItem.position[2] - 4.2}
+                                                                            max={activeCobotBounds ? activeCobotBounds.zMax : selectedItem.position[2] + 4.2}
+                                                                            step={0.02}
+                                                                            value={cobotArmTarget[2]}
+                                                                            onChange={(v) => setCobotArmAxis(2, v)}
+                                                                        />
+                                                                    </div>
+                                                                    <button
+                                                                        onClick={addCurrentArmMovePoint}
+                                                                        className="h-6 rounded border border-gray-700 bg-gray-800 hover:bg-gray-700 text-gray-100 text-[9px] font-bold"
+                                                                        title="Append MOVE step from current arm pose"
+                                                                    >
+                                                                        MOVE POINT TO LIST
+                                                                    </button>
                                                                 </div>
                                                             )}
+
+                                                            <div className="flex gap-2 w-full mt-1">
+                                                                <div className="flex flex-col gap-0.5 w-1/2">
+                                                                    <span className="text-[9px] font-bold text-gray-500">STACK GRID <span className="font-normal text-gray-600">({((selectedItem.config?.stackMatrix?.[0] || 3) * (selectedItem.config?.stackMatrix?.[1] || 3)) - 1} slots)</span></span>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[0] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [parseInt(e.target.value) || 1, selectedItem.config?.stackMatrix?.[1] || 3] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                        <span className="text-gray-500 text-[10px]">x</span>
+                                                                        <input type="number" min="1" max="4" value={selectedItem.config?.stackMatrix?.[1] || 3} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMatrix: [selectedItem.config?.stackMatrix?.[0] || 3, parseInt(e.target.value) || 1] } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex flex-col gap-0.5 w-1/2">
+                                                                    <span className="text-[9px] font-bold text-gray-500">MAX STACK H.</span>
+                                                                    <input type="number" min="1" max="20" value={selectedItem.config?.stackMax || 10} onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, stackMax: parseInt(e.target.value) || 10 } })} className="bg-gray-800 text-white text-[10px] rounded px-1.5 py-0.5 border border-gray-600 outline-none w-full" />
+                                                                </div>
+                                                            </div>
                                                         </div>
-                                                    </>
-                                                )}
-                                            </div>
+                                                    )}
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
 
                                 {selectedItem.type === 'cobot' && (
@@ -1721,7 +2597,7 @@ export const UI: React.FC = () => {
                                                 </div>
                                             )}
                                         </div>
-                                        
+
                                         {/* Programmability UI */}
                                         <div className="bg-emerald-950/25 rounded-md border border-emerald-500/35 overflow-hidden">
                                             <button
@@ -1761,22 +2637,20 @@ export const UI: React.FC = () => {
                                                             </button>
                                                             <button
                                                                 onClick={() => setTeachAction(teachAction === 'pick' ? null : 'pick')}
-                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${
-                                                                    teachAction === 'pick'
+                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${teachAction === 'pick'
                                                                         ? 'bg-cyan-500 text-white animate-pulse'
                                                                         : 'bg-cyan-700/45 hover:bg-cyan-600/60 text-cyan-100'
-                                                                }`}
+                                                                    }`}
                                                                 title={teachAction === 'pick' ? 'Cancel teach pick' : 'Teach pick point'}
                                                             >
                                                                 <Target size={10} />
                                                             </button>
                                                             <button
                                                                 onClick={() => setTeachAction(teachAction === 'drop' ? null : 'drop')}
-                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${
-                                                                    teachAction === 'drop'
+                                                                className={`w-6 h-5 rounded inline-flex items-center justify-center transition-colors ${teachAction === 'drop'
                                                                         ? 'bg-red-500 text-white animate-pulse'
                                                                         : 'bg-red-700/45 hover:bg-red-600/60 text-red-100'
-                                                                }`}
+                                                                    }`}
                                                                 title={teachAction === 'drop' ? 'Cancel teach drop' : 'Teach drop point'}
                                                             >
                                                                 <Target size={10} />
@@ -2036,7 +2910,7 @@ export const UI: React.FC = () => {
                                         <div className="grid grid-cols-2 gap-2">
                                             <label className="flex flex-col gap-1">
                                                 <span className="text-[9px] font-bold text-gray-500">ACCEPTED COLOR</span>
-                                                <select 
+                                                <select
                                                     className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
                                                     value={selectedItem.config?.acceptColor || 'any'}
                                                     onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, acceptColor: e.target.value } })}
@@ -2050,7 +2924,7 @@ export const UI: React.FC = () => {
                                             </label>
                                             <label className="flex flex-col gap-1">
                                                 <span className="text-[9px] font-bold text-gray-500">ACCEPTED SIZE</span>
-                                                <select 
+                                                <select
                                                     className="bg-gray-800 text-white text-[10px] rounded p-1 border border-gray-600 outline-none"
                                                     value={selectedItem.config?.acceptSize || 'any'}
                                                     onChange={(e) => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, acceptSize: e.target.value as any } })}
@@ -2069,19 +2943,19 @@ export const UI: React.FC = () => {
                             {/* Global Actions */}
                             <div className="flex flex-col gap-1.5 min-w-[106px]">
                                 <div className="grid grid-cols-3 gap-1.5">
-                                    <button 
+                                    <button
                                         onClick={() => setMoveModeItemId(moveModeItemId === selectedItem.id ? null : selectedItem.id)}
                                         className={`flex items-center justify-center gap-1 px-2 h-8 rounded-md text-[9px] font-bold transition-colors ${moveModeItemId === selectedItem.id ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]' : 'bg-blue-500/20 hover:bg-blue-500/40 text-blue-400'}`}
                                     >
-                                        <Move size={13} /> {moveModeItemId === selectedItem.id ? 'MOVING...' : 'MOVE'}
+                                        <Move size={13} /> {moveModeItemId === selectedItem.id ? (selectedItem.type === 'cobot' ? 'TUNING...' : 'MOVING...') : (selectedItem.type === 'cobot' ? 'TUNE' : 'MOVE')}
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={handleRotateSelected}
                                         className="flex items-center justify-center gap-1 px-2 h-8 bg-gray-800 hover:bg-gray-700 text-white rounded-md text-[9px] font-bold transition-colors"
                                     >
                                         <RotateCw size={13} /> ROT
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={handleSellSelected}
                                         className="flex items-center justify-center gap-1 px-2 h-8 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-md text-[9px] font-bold transition-colors"
                                     >
@@ -2113,10 +2987,26 @@ export const UI: React.FC = () => {
                             </div>
                         ) : null}
 
-                        <div className={`${panelFrameClass} rounded-2xl p-2 flex flex-wrap justify-center gap-2 sm:gap-3 items-center max-w-[calc(100vw-12px)]`}>
-                            
+                        <div
+                            className={`${panelFrameClass} pointer-events-auto rounded-2xl p-2 flex flex-wrap justify-center gap-2 sm:gap-3 items-center max-w-[calc(100vw-12px)] ${canDragPanels ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                            style={canDragPanels ? { transform: `translate(${toolbarPanelPos.x}px, ${toolbarPanelPos.y}px)` } : undefined}
+                            onPointerDown={(e) => startPanelDrag('toolbar', e)}
+                            onPointerMove={(e) => movePanelDrag('toolbar', e)}
+                            onPointerUp={(e) => endPanelDrag('toolbar', e)}
+                            onPointerCancel={(e) => endPanelDrag('toolbar', e)}
+                        >
+                            {canDragPanels && (
+                                <span
+                                    data-drag-handle="true"
+                                    className="text-cyan-300/80 font-mono text-xs px-1 cursor-grab active:cursor-grabbing select-none"
+                                    title="Drag toolbar"
+                                >
+                                    :::
+                                </span>
+                            )}
+
                             <div className="flex items-center gap-2 mr-2">
-                                <button 
+                                <button
                                     onClick={handlePlayClick}
                                     className={`flex items-center justify-center p-3 rounded-xl transition-all ${isRunning && !isPaused ? 'bg-orange-500/20 text-orange-400 shadow-inner' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30'}`}
                                     title={!isRunning ? "Play (Click 5Ã— for +10k credits)" : isPaused ? "Resume" : "Pause"}
@@ -2126,7 +3016,7 @@ export const UI: React.FC = () => {
 
                                 {/* Stop button */}
                                 <div className="relative">
-                                    <button 
+                                    <button
                                         onClick={handleStopClick}
                                         className={`flex items-center justify-center p-3 rounded-xl transition-all ${showStopConfirm ? 'bg-red-500 text-white' : 'bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white'}`}
                                         title="Stop & Reset Items"
@@ -2135,7 +3025,7 @@ export const UI: React.FC = () => {
                                         <Square size={20} fill="currentColor" />
                                     </button>
                                     {showStopConfirm && (
-                                        <div className="absolute bg-gray-950 border border-red-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-52 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)'}}>
+                                        <div className="absolute bg-gray-950 border border-red-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-52 animate-fade-in" style={{ zIndex: 9999, bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)' }}>
                                             <p className="text-xs text-red-200 font-bold text-center">âš  Reset simulation & clear all parts?</p>
                                             <div className="flex gap-2">
                                                 <button onClick={doStop} className="flex-1 bg-red-500 hover:bg-red-400 text-white text-xs font-bold rounded-lg py-1.5 transition-colors">RESET</button>
@@ -2146,7 +3036,7 @@ export const UI: React.FC = () => {
                                 </div>
 
                                 <div className="flex flex-col gap-1 ml-1">
-                                    <input 
+                                    <input
                                         type="range" min="0.2" max="10" step="0.1"
                                         value={simSpeedValue}
                                         onChange={e => {
@@ -2160,9 +3050,9 @@ export const UI: React.FC = () => {
                                         <button onClick={handleResetClick} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
                                         <button onClick={importFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
                                         <button onClick={exportFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
-                                        
+
                                         {showResetConfirm && (
-                                            <div className="absolute bg-gray-950 border border-amber-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-64 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 12px)', left:'0'}}>
+                                            <div className="absolute bg-gray-950 border border-amber-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-64 animate-fade-in" style={{ zIndex: 9999, bottom: 'calc(100% + 12px)', left: '0' }}>
                                                 <p className="text-xs text-amber-200 font-bold">Reset factory to default scene?</p>
                                                 <p className="text-[10px] text-gray-400 leading-tight">All placed machines and credits will be reset to defaults.</p>
                                                 <div className="flex flex-col gap-1.5 mt-1">
@@ -2177,7 +3067,7 @@ export const UI: React.FC = () => {
                                     </div>
                                 </div>
                             </div>
-                            
+
                             <div className="w-px h-8 bg-gray-700"></div>
 
                             {/* BUILD GROUPS */}
@@ -2189,7 +3079,7 @@ export const UI: React.FC = () => {
                                 ].map(group => {
                                     const isGroupActive = activeGroup === group.id;
                                     const hasActiveItem = group.items.includes(buildMode as ItemType);
-                                    
+
                                     return (
                                         <div key={group.id} className="relative">
                                             <button
@@ -2200,14 +3090,14 @@ export const UI: React.FC = () => {
                                                 <span className="text-xs hidden sm:inline">{group.label}</span>
                                                 <ChevronDown size={14} className={`transition-transform ${isGroupActive ? 'rotate-180' : ''}`} />
                                             </button>
-                                            
+
                                             {isGroupActive && (
-                                                <div className="absolute bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-2 flex flex-col gap-1 w-52 animate-fade-in" style={{zIndex:9999, bottom:'calc(100% + 8px)', left:'50%', transform:'translateX(-50%)'}}>
+                                                <div className="absolute bg-gray-900 border border-gray-700 rounded-xl shadow-2xl p-2 flex flex-col gap-1 w-52 animate-fade-in" style={{ zIndex: 9999, bottom: 'calc(100% + 8px)', left: '50%', transform: 'translateX(-50%)' }}>
                                                     {group.items.map(type => (
-                                                        <BuildButton 
+                                                        <BuildButton
                                                             key={type}
-                                                            title={type === 'sender' ? 'PART SPAWNER' : type.replace('_', ' ').toUpperCase()} 
-                                                            cost={ITEM_COSTS[type]} 
+                                                            title={type === 'sender' ? 'PART SPAWNER' : type.replace('_', ' ').toUpperCase()}
+                                                            cost={ITEM_COSTS[type]}
                                                             isActive={buildMode === type}
                                                             onClick={() => {
                                                                 handleBuildClick(type);
@@ -2492,12 +3382,12 @@ export const UI: React.FC = () => {
     );
 };
 
-const BuildButton: React.FC<{title: string, cost: number, isActive: boolean, onClick: () => void, disabled: boolean, color?: string}> = ({title, cost, isActive, onClick, disabled, color}) => (
-    <button 
+const BuildButton: React.FC<{ title: string, cost: number, isActive: boolean, onClick: () => void, disabled: boolean, color?: string }> = ({ title, cost, isActive, onClick, disabled, color }) => (
+    <button
         onClick={onClick}
         disabled={disabled}
         className={`px-6 py-3 rounded-xl flex flex-col items-center justify-center transition-all min-w-[120px]
-            ${isActive 
+            ${isActive
                 ? color === 'amber' ? 'bg-amber-500/20 border-2 border-amber-500 shadow-inner' : 'bg-blue-500/20 border-2 border-blue-500 shadow-inner'
                 : 'bg-transparent border-2 border-transparent hover:bg-gray-800'}
             ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}

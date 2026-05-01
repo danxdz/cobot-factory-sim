@@ -67,6 +67,52 @@ export interface ItemConfig {
     cobotHomeTarget?: [number, number, number]; // For Cobots: saved gripper home/idle target
     cobotManualTarget?: [number, number, number]; // For Cobots: temporary manual gripper target
     cobotManualControl?: boolean; // For Cobots: pause automation and jog arm to manual target
+    cobotUpperArmLength?: number; // For Cobots: shoulder->elbow segment length
+    cobotForearmLength?: number; // For Cobots: elbow->wrist segment length
+    cobotWristLength?: number; // For Cobots: wrist tube length (before tool)
+    cobotUpperArmDiameter?: number; // For Cobots: upper arm visual diameter
+    cobotForearmDiameter?: number; // For Cobots: forearm visual diameter
+    cobotWristDiameter?: number; // For Cobots: wrist tube visual diameter
+    cobotShoulderMinDeg?: number; // For Cobots: shoulder lower angle limit in degrees
+    cobotShoulderDefDeg?: number; // For Cobots: shoulder default tuning angle in degrees
+    cobotShoulderMaxDeg?: number; // For Cobots: shoulder upper angle limit in degrees
+    cobotElbowMinDeg?: number; // For Cobots: elbow lower angle limit in degrees
+    cobotElbowDefDeg?: number; // For Cobots: elbow default tuning angle in degrees
+    cobotElbowMaxDeg?: number; // For Cobots: elbow upper angle limit in degrees
+    cobotWristMinDeg?: number; // For Cobots: wrist lower angle limit in degrees
+    cobotWristDefDeg?: number; // For Cobots: wrist default tuning angle in degrees
+    cobotWristMaxDeg?: number; // For Cobots: wrist upper angle limit in degrees
+    cobotShoulderVisualOffsetX?: number; // For Cobots: shoulder segment visual offset X
+    cobotShoulderVisualOffsetY?: number; // For Cobots: shoulder segment visual offset Y
+    cobotShoulderVisualOffsetZ?: number; // For Cobots: shoulder segment visual offset Z
+    cobotElbowVisualOffsetX?: number; // For Cobots: elbow segment visual offset X
+    cobotElbowVisualOffsetY?: number; // For Cobots: elbow segment visual offset Y
+    cobotElbowVisualOffsetZ?: number; // For Cobots: elbow segment visual offset Z
+    cobotWristVisualOffsetX?: number; // For Cobots: wrist segment visual offset X
+    cobotWristVisualOffsetY?: number; // For Cobots: wrist segment visual offset Y
+    cobotWristVisualOffsetZ?: number; // For Cobots: wrist segment visual offset Z
+    cobotShoulderJointDiameter?: number; // For Cobots: shoulder joint visual diameter override
+    cobotElbowJointDiameter?: number; // For Cobots: elbow joint visual diameter override
+    cobotWristJointDiameter?: number; // For Cobots: wrist joint visual diameter override
+    cobotToolJointDiameter?: number; // For Cobots: tool joint visual diameter override
+    cobotShoulderJointLength?: number; // For Cobots: shoulder joint visual length override
+    cobotElbowJointLength?: number; // For Cobots: elbow joint visual length override
+    cobotWristJointLength?: number; // For Cobots: wrist joint visual length override
+    cobotToolJointLength?: number; // For Cobots: tool joint visual length override
+    cobotShoulderJointOffsetX?: number; // For Cobots: shoulder joint visual offset X
+    cobotShoulderJointOffsetY?: number; // For Cobots: shoulder joint visual offset Y
+    cobotShoulderJointOffsetZ?: number; // For Cobots: shoulder joint visual offset Z
+    cobotElbowJointOffsetX?: number; // For Cobots: elbow joint visual offset X
+    cobotElbowJointOffsetY?: number; // For Cobots: elbow joint visual offset Y
+    cobotElbowJointOffsetZ?: number; // For Cobots: elbow joint visual offset Z
+    cobotWristJointOffsetX?: number; // For Cobots: wrist joint visual offset X
+    cobotWristJointOffsetY?: number; // For Cobots: wrist joint visual offset Y
+    cobotWristJointOffsetZ?: number; // For Cobots: wrist joint visual offset Z
+    cobotPedestalHeight?: number; // For Cobots: pedestal cylinder height
+    cobotPedestalRadiusScale?: number; // For Cobots: pedestal radius multiplier
+    cobotBaseRingRadiusScale?: number; // For Cobots: base ring radius multiplier
+    cobotTuningSelectedElement?: 'shoulder' | 'elbow' | 'wrist' | 'shoulder_joint' | 'elbow_joint' | 'wrist_joint' | 'pedestal' | 'base'; // For Cobots: active tuning target highlight
+    cobotTuningMode?: boolean; // For Cobots: live geometry/angle tuning pose mode (safety collisions disabled)
     showBeam?: boolean; // For Cameras: show/hide the vision cone
     beltSize?: [number, number]; // For Belts: [width, depth]
     beltHeight?: number; // For Belts: surface height

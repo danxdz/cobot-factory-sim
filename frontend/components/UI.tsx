@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle, Link2, Target, List, Home } from 'lucide-react';
+import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle, Link2, Target, List, Home, Zap, Activity } from 'lucide-react';
 import { useFactoryStore } from '../store';
 import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem, ItemConfig } from '../types';
 import { simState, SimItem } from '../simState';
@@ -73,11 +73,11 @@ function cobotArmBounds(item: PlacedItem) {
     const l2 = clampNum(item.config?.cobotForearmLength ?? COBOT_FOREARM_LENGTH_DEFAULT, 0.5, 3);
     const l3 = clampNum(item.config?.cobotWristLength ?? COBOT_WRIST_LENGTH_DEFAULT, 0.2, 1.5) + COBOT_HAND_LINK_LENGTH + COBOT_GRIPPER_TIP_OFFSET;
     const pedestalH = clampNum(item.config?.cobotPedestalHeight ?? COBOT_PEDESTAL_HEIGHT_DEFAULT, 0.18, 0.8);
-    const planarReach = Math.max(0.25, l1 + l2 - 0.08);
+    const planarReach = Math.max(0.25, l1 + l2 + l3 - 0.08);
     const mount = cobotMountWorld(item);
     const mountY = item.position[1] + COBOT_PLATFORM_TOP_Y + pedestalH + 0.05;
-    const yMin = Math.max(0.08, mountY - (l1 + l2) - l3);
-    const yMax = Math.max(yMin + 0.2, mountY + (l1 + l2) - l3);
+    const yMin = Math.max(0.08, mountY - (l1 + l2 + l3) - 0.05);
+    const yMax = Math.max(yMin + 0.2, mountY + (l1 + l2 + l3) - 0.05);
     return {
         planarReach,
         xMin: mount.x - planarReach,
@@ -1023,6 +1023,21 @@ export const UI: React.FC = () => {
     } = useFactoryStore();
 
     const selectedItem = placedItems.find(i => i.id === selectedItemId);
+    
+    // Joint Torque Polling for Selected Cobot
+    const [jointTorques, setJointTorques] = React.useState<number[]>([0, 0, 0, 0]);
+    React.useEffect(() => {
+        if (selectedItem?.type !== 'cobot') {
+            if (jointTorques.some(v => v !== 0)) setJointTorques([0, 0, 0, 0]);
+            return;
+        }
+        const timer = setInterval(() => {
+            if (!simState?.cobotStates) return;
+            const cs = simState.cobotStates.get(selectedItem.id);
+            if (cs) setJointTorques([...cs.jointTorques]);
+        }, 100);
+        return () => clearInterval(timer);
+    }, [selectedItem?.id]);
     const moduleConfigTypes: ItemType[] = ['sender', 'receiver', 'indexed_receiver', 'pile'];
     const cameras = placedItems.filter(i => i.type === 'camera');
     const cobots = placedItems.filter(i => i.type === 'cobot');
@@ -1511,7 +1526,10 @@ export const UI: React.FC = () => {
     const addProgramStep = (action: ProgramAction) => {
         if (!selectedItem) return;
         const current = selectedItem.config?.program || [];
-        const lastPos = current.slice().reverse().find(step => step.pos)?.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]];
+        const manualPos = selectedItem.config?.cobotManualControl || selectedItem.config?.cobotTuningMode 
+            ? selectedItem.config.cobotManualTarget 
+            : null;
+        const lastPos = manualPos || (current.slice().reverse().find(step => step.pos)?.pos ?? [selectedItem.position[0], 0.56, selectedItem.position[2]]);
         const nextStep: ProgramStep = action === 'wait'
             ? { action, duration: 0.4 }
             : action === 'drop'
@@ -2200,6 +2218,27 @@ export const UI: React.FC = () => {
                                         {selectedLabel}
                                     </button>
                                 )}
+                                
+                                {selectedItem.type === 'cobot' && (
+                                    <div className="flex items-center gap-1.5 px-3 border-l border-gray-700 ml-1 py-1">
+                                        {['B','S','E','W'].map((label, i) => {
+                                            const t = jointTorques[i] || 0;
+                                            const height = Math.min(100, (0.1 + t * 0.9) * 100);
+                                            const isHigh = t > 0.45;
+                                            return (
+                                                <div key={label} className="flex flex-col items-center gap-0.5" title={`${['Base','Shoulder','Elbow','Wrist'][i]} Torque`}>
+                                                    <div className="w-2.5 h-6 bg-gray-800 rounded-sm overflow-hidden relative border border-gray-700">
+                                                        <div 
+                                                            className={`absolute bottom-0 left-0 right-0 transition-all duration-150 ${isHigh ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-blue-400'}`}
+                                                            style={{ height: `${height}%` }}
+                                                        />
+                                                    </div>
+                                                    <span className="text-[7px] font-bold text-gray-500">{label}</span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                             </div>
                             <div className="flex items-center gap-2">
                                 {selectedItem.type === 'cobot' && (
@@ -2225,11 +2264,18 @@ export const UI: React.FC = () => {
                                             <Cpu size={11} />
                                         </button>
                                         <button
-                                            onClick={toggleMachineRunning}
-                                            className={`rounded-md p-1 transition-colors ${selectedItem.config?.isStopped ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
-                                            title={selectedItem.config?.isStopped ? "Resume Cobot" : "Stop Cobot"}
+                                            onClick={() => updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, enableRepulsion: !(selectedItem.config?.enableRepulsion !== false) } })}
+                                            className={`inline-flex items-center justify-center rounded-md w-7 h-6 border transition-colors ${selectedItem.config?.enableRepulsion !== false ? 'border-fuchsia-400/45 bg-fuchsia-500/15 text-fuchsia-100' : 'border-gray-700 bg-gray-900/55 text-gray-400 hover:text-gray-200'}`}
+                                            title={selectedItem.config?.enableRepulsion !== false ? 'Disable soft repulsion' : 'Enable soft repulsion'}
                                         >
-                                            {selectedItem.config?.isStopped ? <Play size={16} fill="currentColor" /> : <Square size={16} fill="currentColor" />}
+                                            <Zap size={11} />
+                                        </button>
+                                        <button
+                                            onClick={toggleMachineRunning}
+                                            className={`rounded-md p-1 transition-colors ${(selectedItem.config?.isStopped || selectedItem.config?.cobotManualControl) ? 'text-emerald-400 hover:bg-emerald-500/20' : 'text-red-400 hover:bg-red-500/20'}`}
+                                            title={(selectedItem.config?.isStopped || selectedItem.config?.cobotManualControl) ? "Resume Cobot" : "Stop Cobot"}
+                                        >
+                                            {(selectedItem.config?.isStopped || selectedItem.config?.cobotManualControl) ? <Play size={16} fill="currentColor" /> : <Square size={16} fill="currentColor" />}
                                         </button>
                                     </>
                                 )}
@@ -2621,6 +2667,18 @@ export const UI: React.FC = () => {
                                                         <List size={9} />
                                                         POINTS
                                                     </span>
+                                                    <span
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotShowPath: !(selectedItem.config?.cobotShowPath !== false) } });
+                                                        }}
+                                                        className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${selectedItem.config?.cobotShowPath !== false ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
+                                                        title={selectedItem.config?.cobotShowPath !== false ? 'Hide trajectory path' : 'Show trajectory path'}
+                                                    >
+                                                        <Activity size={9} />
+                                                        PATH
+                                                    </span>
                                                     {showController ? <ChevronDown size={12} className="text-emerald-200" /> : <ChevronRight size={12} className="text-emerald-200" />}
                                                 </div>
                                             </button>
@@ -2746,6 +2804,9 @@ export const UI: React.FC = () => {
                                                                     </select>
                                                                     <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(idx); moveProgramStep(idx, -1); }} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowUp size={12} /></button>
                                                                     <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(idx); moveProgramStep(idx, 1); }} className="p-0.5 rounded bg-gray-800 text-gray-300 hover:text-white"><ArrowDown size={12} /></button>
+                                                                    {selectedMachineState?.stepIndex === idx && (
+                                                                        <div className="ml-2 px-1 rounded bg-emerald-500/20 border border-emerald-500/40 text-[7px] font-black text-emerald-400 animate-pulse">ACTIVE</div>
+                                                                    )}
                                                                     <button onClick={(e) => { e.stopPropagation(); setActiveProgramStepIndex(null); removeProgramStep(idx); }} className="ml-auto p-0.5 rounded bg-red-500/15 text-red-300 hover:bg-red-500/25"><Trash2 size={12} /></button>
                                                                 </div>
                                                                 {step.action === 'wait' ? (

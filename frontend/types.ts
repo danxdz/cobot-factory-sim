@@ -59,7 +59,9 @@ export interface ItemConfig {
     showTeachZones?: boolean; // For Cobots: show pick/drop teaching zones while selected
     showTeachPoints?: boolean; // For Cobots: show taught pick/drop point balls while selected
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
+    cobotShowPath?: boolean; // For Cobots: show real-time toolpath trajectory while simulation is running
     uiActiveProgramStepIndex?: number; // For Cobots UI: currently edited program step index
+    enableRepulsion?: boolean; // For Cobots: enable/disable soft avoidance force
     cobotCollisionEnabled?: boolean; // For Cobots: enable/disable collision safety system
     collisionStopped?: boolean; // For Cobots: local safety pause after collision
     isStopped?: boolean; // For Cobots: manual pause toggle
@@ -123,6 +125,7 @@ export interface ItemConfig {
     tableHeight?: number; // For Tables: top surface height
     tableGrid?: [number, number]; // For Tables: [cols, rows] marker grid
     showTableGrid?: boolean; // For Tables: show/hide surface grid markers
+    [key: string]: any;
 }
 
 export interface PlacedItem {
@@ -140,6 +143,7 @@ export interface MachineRuntimeState {
     health: MachineHealth;
     label: string;
     detail?: string;
+    stepIndex?: number;
 }
 
 export interface FactoryState {

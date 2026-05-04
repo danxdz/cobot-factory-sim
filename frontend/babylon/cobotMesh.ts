@@ -2447,8 +2447,16 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
 
                     const supportTop = supportTopAt(target.x, target.z, state.obstacles);
                     const targetTop = target.y + partHalfHeight(state.targetedItem);
-                    const pickY = Math.max(targetTop + PICK_CONTACT_PAD_GAP, supportTop + PICK_SURFACE_CONTACT_GAP);
+                    
+                    // TACTILE PICK: Zero gap for true contact before grab
+                    const pickY = Math.max(targetTop, supportTop);
                     state.desiredTarget.set(target.x, pickY, target.z);
+
+                    // Slow down for the final 50mm of the approach
+                    const distToTarget = state.ikTarget.y - targetTop;
+                    if (distToTarget < 0.05) {
+                        state.speed = Math.min(state.speed, 1.25);
+                    }
 
                     const reachDist = Math.sqrt(
                         (target.x - mountPos.x) * (target.x - mountPos.x) +
@@ -2460,14 +2468,14 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 }
                 const contact = pickupContactState(state, state.targetedItem);
                 const partTorque = state.jointTorques[3] + state.jointTorques[2] * 0.5;
-                // EXTREME PRECISION: Part MUST be physically touched (torque spike) and very close (<1.5cm)
-                const contactReached = (contact.touchingPart || (contact.centerYError <= 0.015 && partTorque > 0.62));
+                // MUST be physically close (<2.5cm) OR feel a torque spike
+                const contactReached = (contact.touchingPart || (Math.abs(contact.padGap) <= 0.025 && partTorque > 0.55));
                 const abortForReach = isUnreachable && (!targetOnDriveNow || state.waitTimer > 0.5);
                 if (contactReached && state.targetedItem?.state === 'targeted') {
                     const latch = canLatchByProximity(
                         state.targetedItem,
-                        targetOnDriveNow ? 0.04 : 0.02, // 4cm max for belt, 2cm for static
-                        targetOnDriveNow ? 0.025 : 0.012
+                        targetOnDriveNow ? 0.06 : 0.035, // 6cm for belt, 3.5cm for static
+                        targetOnDriveNow ? 0.04 : 0.025
                     );
                     if (latch.ok && latch.gripPose) {
                         logCobotEvent(
@@ -2827,8 +2835,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     break;
                 }
                 
-                // TACTILE DESCEND: Reduce pad to almost zero (10mm) for a "touch" feel.
-                const safeDropY = quantizeHeight(Math.max(placement.landingY + 0.01, wallTopAt(tgt.x, tgt.z, dropObstacles(state)) + 0.02), 0.01);
+                // TACTILE DESCEND: Zero gap for true contact.
+                const safeDropY = quantizeHeight(Math.max(placement.landingY, wallTopAt(tgt.x, tgt.z, dropObstacles(state))), 0.01);
                 state.desiredTarget.set(tgt.x, safeDropY, tgt.z);
                 
                 // Slow down for the final 50mm to "feel" the stack

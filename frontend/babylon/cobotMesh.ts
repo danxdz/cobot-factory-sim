@@ -1554,7 +1554,7 @@ function resolveFlowGoal(state: CobotState, rawGoal: Vector3): Vector3 {
     // mid-phase (e.g. dynamic drop-target recomputation, or idle waiting for
     // a new pickup candidate that shifts the hover position).
     const goalDrift = Vector3.Distance(state.lockedFlowGoal, rawGoal);
-    const driftThreshold = isFineAlignPhase(state.phase) ? 0.05 : 0.10;
+    const driftThreshold = isFineAlignPhase(state.phase) ? 0.08 : 0.18;
     if (phaseChanged || goalDrift > driftThreshold) {
         state.lockedFlowPhase = state.phase;
         state.lockedFlowGoal.copyFrom(rawGoal);
@@ -2308,6 +2308,12 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     const partR = partRadiusForSpec(state.targetedItem);
                     const targetOnDriveNow = !!driveTileAt(state.targetedItem.pos.x, state.targetedItem.pos.z, state.obstacles);
                     const catchRadius = clamp(partR * (targetOnDriveNow ? 2.9 : 2.2), PICK_ANCHOR_MIN_OFFSET, PICK_ANCHOR_MAX_OFFSET);
+                    const driftFromAnchor = Vector3.Distance(rawTarget, pickAnchor);
+                    const targetLost = driftFromAnchor > catchRadius + 0.32;
+                    const stallRecoveryInProgress = state.blockedTimer > 0.12 || state.motionStallTimer > 0.12 || state.partContactTimer > 0.18;
+                    if (targetLost && !stallRecoveryInProgress) {
+                        state.targetTimer += delta * 1.4;
+                    }
                     let target = targetOnDriveNow
                         ? rawTarget.clone()
                         : clampTargetAroundAnchorXZ(pickAnchor, rawTarget, catchRadius);
@@ -2373,7 +2379,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                         state.waitTimer = 0;
                         state.targetTimer = 0;
                         state.blockedTimer = 0;
-                    } else if (state.targetTimer > 2.5 || state.targetTimer > pickTimeout || abortForReach) {
+                    } else if (state.targetTimer > 2.5 || state.targetTimer > pickTimeout || abortForReach || (targetLost && !stallRecoveryInProgress && state.targetTimer > 0.85)) {
                         const timeoutCommitRadius = targetOnDriveNow
                             ? Math.max(0.85, partR * 2.8) // More generous for moving items
                             : Math.max(0.52, partR * 1.35);
@@ -2423,6 +2429,8 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 const pickTimeout = currentPickTimeout(state);
                 let isUnreachable = false;
                 let targetOnDriveNow = false;
+                let targetLost = false;
+                const stallRecoveryInProgress = state.blockedTimer > 0.12 || state.motionStallTimer > 0.12 || state.partContactTimer > 0.18;
                 if (state.targetedItem?.state === 'targeted') {
                     const pickAnchor = currentPickAnchor(state) ?? stepPos;
                     const partR = partRadiusForSpec(state.targetedItem);
@@ -2432,6 +2440,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     if (targetOnDriveNow) {
                         const rawTarget = pickupAimPoint(state, state.targetedItem, 0.12);
                         const catchRadius = clamp(partR * 3.1, PICK_ANCHOR_MIN_OFFSET, PICK_ANCHOR_MAX_OFFSET);
+                        const driftFromAnchor = Vector3.Distance(rawTarget, pickAnchor);
+                        targetLost = driftFromAnchor > catchRadius + 0.32;
+                        if (targetLost && !stallRecoveryInProgress) {
+                            state.targetTimer += delta * 1.4;
+                        }
                         target = clampTargetAroundAnchorXZ(pickAnchor, rawTarget, catchRadius);
                         state.lockedPickupTarget = null;
                         state.lockedPickupItemId = null;
@@ -2440,6 +2453,11 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                     } else {
                         const rawTarget = pickupAimPoint(state, state.targetedItem, PICK_LEAD_TIME);
                         const catchRadius = clamp(partR * 2.35, PICK_ANCHOR_MIN_OFFSET, PICK_ANCHOR_MAX_OFFSET);
+                        const driftFromAnchor = Vector3.Distance(rawTarget, pickAnchor);
+                        targetLost = driftFromAnchor > catchRadius + 0.32;
+                        if (targetLost && !stallRecoveryInProgress) {
+                            state.targetTimer += delta * 1.4;
+                        }
                         target = clampTargetAroundAnchorXZ(pickAnchor, rawTarget, catchRadius);
                         state.lockedPickupTarget = target.clone();
                         state.lockedPickupItemId = state.targetedItem.id;
@@ -2581,7 +2599,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                             state.lockedPickupUntil = 0;
                         }
                     }
-                } else if (state.waitTimer > 2.1 || state.targetTimer > pickTimeout || abortForReach) {
+                } else if (state.waitTimer > 2.1 || state.targetTimer > pickTimeout || abortForReach || (targetLost && !stallRecoveryInProgress && state.targetTimer > 0.9)) {
                     const finalLatch = canLatchByProximity(
                         state.targetedItem,
                         targetOnDriveNow ? 0.58 : 0.34,
@@ -3469,7 +3487,9 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 state.avoidanceSide = 0;
             } else {
             const lateralPreference = clamp(hazardLeft - hazardRight, -1, 1);
-            if (!dropOnSelfSupport && Math.abs(lateralPreference) > 0.02) {
+            const lateralActivation = 0.18;
+            const lateralRelease = 0.08;
+            if (!dropOnSelfSupport && Math.abs(lateralPreference) > lateralActivation) {
                 const side = lateralPreference > 0 ? 1 : -1;
                 state.avoidanceSide = side as -1 | 1;
                 const strafe = sensorRight.scale(side * cruiseSpeed * (0.18 + 0.82 * Math.max(maxHazard, nearRisk)));
@@ -3478,12 +3498,16 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
                 desiredVelocity.addInPlace(sensorRight.scale(state.avoidanceSide * cruiseSpeed * 0.2));
             }
 
+            if (!dropOnSelfSupport && Math.abs(lateralPreference) < lateralRelease) {
+                state.avoidanceSide = 0;
+            }
+
             if (!dropOnSelfSupport && hazardForward > 0.62 && minDist < 0.26) {
                 desiredVelocity.addInPlace(sensorForward.scale(-cruiseSpeed * hazardForward * 0.7));
             }
 
             if (state.avoidanceBias.lengthSquared() > 0.0001) {
-                const biasGain = (precisePhase ? 0.55 : 1.05) * state.speed;
+                const biasGain = (precisePhase ? 0.42 : 0.78) * state.speed;
                 desiredVelocity.addInPlace(state.avoidanceBias.scale(biasGain));
             }
 

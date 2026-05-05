@@ -465,8 +465,10 @@ function pickupContactState(state: CobotState, item: SimItem | null) {
     const itemDist = Math.sqrt(itemDx * itemDx + itemDz * itemDz);
     const effectiveDist = Math.min(horizontalDist, itemDist);
     const padGap = tip.y - targetTop;
-    const touchingPart = effectiveDist < Math.max(PICK_CONTACT_RADIUS, targetRadius * 0.92) && padGap >= -0.02 && padGap <= PICK_CONTACT_PAD_GAP + 0.03;
-    const touchingSurface = effectiveDist < Math.max(PICK_GRAB_RADIUS, targetRadius * 0.82) && tip.y <= supportTop + PICK_SURFACE_CONTACT_GAP + 0.018;
+    const suctionFootprint = Math.min(PICK_CONTACT_RADIUS, Math.max(0.16, targetRadius * 0.56));
+    const surfaceFootprint = Math.min(PICK_GRAB_RADIUS, Math.max(0.18, targetRadius * 0.66));
+    const touchingPart = effectiveDist < suctionFootprint && padGap >= -0.022 && padGap <= 0.075;
+    const touchingSurface = effectiveDist < surfaceFootprint && tip.y <= supportTop + PICK_SURFACE_CONTACT_GAP + 0.018;
     return {
         tip,
         targetPos,
@@ -3851,16 +3853,23 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
     // ── TORQUE AND OVERLOAD MONITORING ──────────────────────────────────────
     const currentAngles: [number, number, number, number] = [
         state.basePivot.rotation.y,
-        state.shoulder.rotation.z,
-        state.elbow.rotation.z,
-        state.wrist.rotation.z
+        state.shoulder.rotation.x,
+        state.elbow.rotation.x,
+        state.wrist.rotation.x
     ];
+
+    const angularDelta = (current: number, previous: number) => {
+        let diff = current - previous;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        return Math.abs(diff);
+    };
     
     const wantsToMoveFast = state.ikVelocity.length() > 0.2;
     const isActuallyMoving = Vector3.Distance(state.ikTarget, state.lastProbePos) > 0.002;
     
     for (let i = 0; i < 4; i++) {
-        const angleDiff = Math.abs(currentAngles[i] - state.lastJointAngles[i]);
+        const angleDiff = angularDelta(currentAngles[i], state.lastJointAngles[i]);
         // If we want to move but the joint is static, torque increases
         const load = (wantsToMoveFast && angleDiff < 0.001) ? 0.85 : (angleDiff * 2.5);
         state.jointTorques[i] = state.jointTorques[i] * 0.85 + load * 0.15;

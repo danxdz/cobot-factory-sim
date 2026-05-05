@@ -364,6 +364,16 @@ export const BabylonScene: React.FC = () => {
                             state.motionStallTimer = oldState.motionStallTimer;
                             state.partContactTimer = oldState.partContactTimer;
                             state.overdriveScore = oldState.overdriveScore;
+                            state.avoidanceSide = oldState.avoidanceSide;
+                            state.avoidanceBias.copyFrom(oldState.avoidanceBias);
+                            state.safetySpeedFactor = oldState.safetySpeedFactor;
+                            state.reducedSpeedActive = oldState.reducedSpeedActive;
+                            state.lockedDropTarget = oldState.lockedDropTarget?.clone() ?? null;
+                            state.dropExitTarget = oldState.dropExitTarget?.clone() ?? null;
+                            state.activeDropTarget = oldState.activeDropTarget?.clone() ?? null;
+                            state.autoDropTarget = oldState.autoDropTarget?.clone() ?? null;
+                            state.toolNormalBlend = oldState.toolNormalBlend;
+                            state.lastProbePos.copyFrom(oldState.lastProbePos);
                         }
                         cobotStates.set(item.id, state);
                         node.getChildMeshes().forEach(m => shadows.addShadowCaster(m));

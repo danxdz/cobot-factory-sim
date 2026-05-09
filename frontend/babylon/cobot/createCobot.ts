@@ -320,10 +320,10 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
     // Visual proximity sensors (4-way around wrist: front/right/back/left)
     const sensorLights: Mesh[] = [];
     const sensorOffsets: Array<[number, number, number]> = [
-        [0, 0.1, 0.13],   // front
+        [0, 0.1, -0.13],  // front
         // Side indicators follow hazard order directly (front/right/back/left).
         [0.13, 0.1, 0],   // right
-        [0, 0.1, -0.13],  // back
+        [0, 0.1, 0.13],   // back
         [-0.13, 0.1, 0],  // left
     ];
     for (let i = 0; i < sensorOffsets.length; i++) {
@@ -399,11 +399,9 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         safetyStopped: false,
         isOutOfRange: false,
         stalledInternal: false,
-        enableRepulsion: true,
         recoveryTimer: 0,
         overdriveScore: 0,
         avoidanceSide: 0,
-        avoidanceBias: Vector3.Zero(),
         retreatTarget: null,
         retreatTimer: 0,
         recoveryAttempts: 0,

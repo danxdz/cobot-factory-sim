@@ -47,11 +47,9 @@ export interface CobotState {
     safetyStopped: boolean;
     isOutOfRange: boolean;
     stalledInternal: boolean;
-    enableRepulsion: boolean;
     recoveryTimer: number;
     overdriveScore: number;
     avoidanceSide: -1 | 0 | 1;
-    avoidanceBias: Vector3;
     retreatTarget: Vector3 | null;
     retreatTimer: number;
     recoveryAttempts: number;

@@ -55,6 +55,7 @@ export const simState = {
     cameraFrames: {} as Record<string, string>,
     cobotWrists: {} as Record<string, Vector3>,
     cobotArmSamples: {} as Record<string, Vector3[]>,
+    cobotLoads: {} as Record<string, boolean>,
     cobotLogs: {} as Record<string, CobotDebugLogEntry[]>,
     reset: () => {
         simState.items = [];
@@ -62,6 +63,7 @@ export const simState = {
         simState.cameraFrames = {};
         simState.cobotWrists = {};
         simState.cobotArmSamples = {};
+        simState.cobotLoads = {};
         simState.cobotLogs = {};
     }
 };

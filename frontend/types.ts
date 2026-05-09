@@ -61,7 +61,6 @@ export interface ItemConfig {
     showArmRange?: boolean; // For Cobots: show reachable arm workspace while selected
     cobotShowPath?: boolean; // For Cobots: show real-time toolpath trajectory while simulation is running
     uiActiveProgramStepIndex?: number; // For Cobots UI: currently edited program step index
-    enableRepulsion?: boolean; // For Cobots: enable/disable soft avoidance force
     cobotCollisionEnabled?: boolean; // For Cobots: enable/disable collision safety system
     collisionStopped?: boolean; // For Cobots: local safety pause after collision
     isStopped?: boolean; // For Cobots: manual pause toggle

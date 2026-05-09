@@ -281,7 +281,7 @@ export const BabylonScene: React.FC = () => {
                 const speedPct = Math.round((cState.safetySpeedFactor || 1) * 100);
                 return { health: 'warning', label: 'Reduced Speed', detail: `Safety zone active (${speedPct}% speed)` };
             }
-            if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Obstructed', detail: 'Obstacle repulsion active while moving' };
+            if (cState.blockedTimer > 0.18) return { health: 'warning', label: 'Obstructed', detail: 'Trajectory replanning around obstacle' };
             if (cState.isFull) return { health: 'stopped', label: 'Full', detail: 'Container stack is at capacity' };
             if (cState.phase === 'release') return { health: 'running', label: 'Dropping', detail: 'Releasing part onto target' };
             if (['pick_hover', 'pick_descend', 'pick_attach', 'pick_recenter'].includes(cState.phase)) {
@@ -365,7 +365,6 @@ export const BabylonScene: React.FC = () => {
                             state.partContactTimer = oldState.partContactTimer;
                             state.overdriveScore = oldState.overdriveScore;
                             state.avoidanceSide = oldState.avoidanceSide;
-                            state.avoidanceBias.copyFrom(oldState.avoidanceBias);
                             state.safetySpeedFactor = oldState.safetySpeedFactor;
                             state.reducedSpeedActive = oldState.reducedSpeedActive;
                             state.lockedDropTarget = oldState.lockedDropTarget?.clone() ?? null;
@@ -1371,7 +1370,6 @@ export const BabylonScene: React.FC = () => {
                 cState.program = itm.config?.program || [];
                 // tuningMode is driven by the UI config flag, NOT by move-mode gizmo.
                 cState.tuningMode = itm.config?.cobotTuningMode === true;
-                cState.enableRepulsion = itm.config?.enableRepulsion !== false;
                 if (!itm.config?.collisionStopped) cState.safetyStopped = false;
             }
         }

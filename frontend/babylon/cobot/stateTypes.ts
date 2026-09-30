@@ -1,6 +1,6 @@
-import type { Mesh, PBRMaterial, StandardMaterial, TransformNode, Vector3 } from '@babylonjs/core';
+import type { LinesMesh,Mesh,PBRMaterial,StandardMaterial,TransformNode,Vector3 } from '@babylonjs/core';
 import type { SimItem } from '../../simState';
-import type { PartSize, PlacedItem, ProgramStep } from '../../types';
+import type { PartSize,PlacedItem,ProgramStep } from '../../types';
 
 export interface StackSlot {
     worldPos: Vector3;
@@ -9,6 +9,11 @@ export interface StackSlot {
     col: number;
     row: number;
 }
+
+export type CobotPhase = 'idle' | 'manual' | 'recovery' | 'wait_step' |
+    'pick_hover' | 'pick_descend' | 'pick_attach' | 'pick_recenter' |
+    'lift' | 'transit_drop' | 'hover_drop' | 'descend_drop' | 'release' |
+    'drop_recenter' | 'next';
 
 export interface CobotState {
     root: TransformNode;
@@ -26,7 +31,7 @@ export interface CobotState {
     statusDisplayMat: PBRMaterial;
     proximityMats: StandardMaterial[];
     collisionSphere: Mesh;
-    pathLine?: Mesh;
+    pathLine?: LinesMesh;
     proximityMult: number;
 
     ikTarget: Vector3;
@@ -42,12 +47,14 @@ export interface CobotState {
     partContactTimer: number;
     lastProbePos: Vector3;
     simTime: number;
+    itemMotionTracker: WeakMap<SimItem, { pos: Vector3; t: number; vel: Vector3 }>;
     targetTimer: number;
     skippedTargetIds: Record<string, number>;
     safetyStopped: boolean;
     isOutOfRange: boolean;
     stalledInternal: boolean;
     recoveryTimer: number;
+    recoveryElapsed: number;
     overdriveScore: number;
     avoidanceSide: -1 | 0 | 1;
     retreatTarget: Vector3 | null;
@@ -74,7 +81,7 @@ export interface CobotState {
     lastReplanTargetKey: string;
     lockedDropTarget: Vector3 | null;
 
-    phase: string;
+    phase: CobotPhase;
     stepIndex: number;
     targetedItem: SimItem | null;
     grabbedItem: SimItem | null;
@@ -87,6 +94,8 @@ export interface CobotState {
     position: [number, number, number];
     baseRotY: number;
     program: ProgramStep[];
+    configuredProgramSignature: string;
+    lastUnlockTime?: number;
     speed: number;
     selfItem: PlacedItem | null;
     cameras: PlacedItem[];
@@ -104,6 +113,7 @@ export interface CobotState {
     sensorLights: Mesh[];
     tuningMode: boolean;
     lastPreviewUpdate?: number;
+    lastMotionTraceAt?: number;
     lastDroppedItemId?: string;
     sensorHazards: [number, number, number, number];
     sensorMinDist: number;

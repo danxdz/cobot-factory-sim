@@ -4,8 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "node --import ./tests/register.mjs --test tests/*.test.mjs",
     "dev": "vite",
-    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

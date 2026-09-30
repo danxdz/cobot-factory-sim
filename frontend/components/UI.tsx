@@ -1,8 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Play, Square, Pause, Trash2, Settings2, X, RotateCw, Cpu, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Camera, SlidersHorizontal, Download, Upload, Move, HelpCircle, Link2, Target, List, Home, Activity } from 'lucide-react';
+import { Activity,ArrowDown,ArrowUp,Camera,ChevronDown,ChevronRight,Cpu,Download,HelpCircle,Home,Link2,List,Move,Pause,Play,Plus,RotateCw,Settings2,SlidersHorizontal,Square,Target,Trash2,Upload,X } from 'lucide-react';
+import React,{ useEffect,useRef,useState } from 'react';
+import { SimItem,simState } from '../simState';
 import { useFactoryStore } from '../store';
-import { ITEM_COSTS, ItemType, Direction, PartShape, PartSize, ProgramAction, ProgramStep, PlacedItem, ItemConfig } from '../types';
-import { simState, SimItem } from '../simState';
+import { Direction,ITEM_COSTS,ItemConfig,ItemType,PartShape,PartSize,PlacedItem,ProgramAction,ProgramStep } from '../types';
 import { PartPreview3D } from './PartPreview3D';
 
 const PICK_COLORS = [
@@ -1038,7 +1038,6 @@ export const UI: React.FC = () => {
         }, 100);
         return () => clearInterval(timer);
     }, [selectedItem?.id]);
-    const moduleConfigTypes: ItemType[] = ['sender', 'receiver', 'indexed_receiver', 'pile'];
     const cameras = placedItems.filter(i => i.type === 'camera');
     const cobots = placedItems.filter(i => i.type === 'cobot');
     const applyCobotGeometryToAll = (geometry: Partial<ItemConfig>) => {
@@ -1604,16 +1603,8 @@ export const UI: React.FC = () => {
         });
     };
 
-    const patchSelectedPosition = (axis: 0 | 1 | 2, value: number) => {
-        if (!selectedItem) return;
-        const next = [...selectedItem.position] as [number, number, number];
-        next[axis] = snapValue(value);
-        updatePlacedItem(selectedItem.id, { position: next });
-    };
-
     const snapStep = snapInputs ? 0.5 : 0.1;
     const heightStep = snapInputs ? 0.5 : 0.05;
-    const snapValue = (value: number, step = snapStep) => snapInputs ? Math.round(value / step) * step : value;
     const controllerSortColor = selectedItem?.config?.defaultDropSortColor !== false;
     const controllerSortSize = selectedItem?.config?.defaultDropSortSize !== false;
     const controllerSortShape = selectedItem?.config?.defaultDropSortShape !== false;
@@ -1726,19 +1717,6 @@ export const UI: React.FC = () => {
         a.download = `cobot_log_${selectedItem.id}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
         a.click();
         URL.revokeObjectURL(url);
-    };
-
-    const patchMachineSize = (axis: 0 | 1, value: number) => {
-        if (!selectedItem) return;
-        const current = selectedItem.config?.machineSize || [2, 2];
-        const next = [...current] as [number, number];
-        next[axis] = Math.max(0.5, snapValue(value || 0.5));
-        updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, machineSize: next } });
-    };
-
-    const patchMachineHeight = (value: number) => {
-        if (!selectedItem) return;
-        updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, machineHeight: Math.max(0.1, snapValue(value || 0.1, heightStep)) } });
     };
 
     const openPartCreator = () => {

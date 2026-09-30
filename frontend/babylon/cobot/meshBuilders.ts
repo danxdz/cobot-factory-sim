@@ -1,11 +1,11 @@
 import {
-    Color3,
-    Mesh,
-    MeshBuilder,
-    PBRMaterial,
-    Scene,
-    TransformNode,
-    Vector3,
+Color3,
+Mesh,
+MeshBuilder,
+PBRMaterial,
+Scene,
+TransformNode,
+Vector3,
 } from '@babylonjs/core';
 
 export function pbr(scene: Scene, hex: string, metallic = 0.5, roughness = 0.4, alpha = 1): PBRMaterial {

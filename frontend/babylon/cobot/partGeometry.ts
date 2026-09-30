@@ -1,4 +1,4 @@
-import type { PartShape, PartSize } from '../../types';
+import type { PartShape,PartSize } from '../../types';
 
 export const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
 export const SHAPE_BASE_DIAMETER: Record<PartShape, number> = {

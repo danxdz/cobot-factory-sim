@@ -1,8 +1,14 @@
 import {
-    Scene, MeshBuilder, StandardMaterial, Color3, Vector3,
-    TransformNode, Mesh, PBRMaterial, CSG
+Color3,
+CSG,
+Mesh,
+MeshBuilder,
+PBRMaterial,
+Scene,
+TransformNode,
+Vector3
 } from '@babylonjs/core';
-import { PartShape, PlacedItem } from '../types';
+import { PartShape,PlacedItem } from '../types';
 
 const ROTATION_MAP = [Math.PI, Math.PI / 2, 0, -Math.PI / 2]; // N,E,S,W
 
@@ -22,7 +28,6 @@ function box(name: string, w: number, h: number, d: number, pos: Vector3, mat: P
     m.position = pos;
     m.material = mat;
     m.receiveShadows = true;
-    m.castShadows = true;
     if (parent) m.parent = parent;
     return m;
 }
@@ -71,7 +76,6 @@ export function createPlateMesh(
     const mat = pbr(scene, color, 0.2, 0.4, isGhost ? 0.4 : 1);
     plate.material = mat;
     plate.receiveShadows = true;
-    plate.castShadows = true;
     return plate;
 }
 
@@ -97,14 +101,12 @@ export function createPartMesh(
             const can = MeshBuilder.CreateCylinder(`${namePrefix}_can`, { diameter: 0.56, height: 0.08, tessellation: 32 }, scene);
             can.material = mat;
             can.receiveShadows = true;
-            can.castShadows = true;
             return can;
         }
         case 'box': {
             const bx = MeshBuilder.CreateBox(`${namePrefix}_box`, { width: 0.56, depth: 0.56, height: 0.08 }, scene);
             bx.material = mat;
             bx.receiveShadows = true;
-            bx.castShadows = true;
             return bx;
         }
         case 'pyramid': {
@@ -117,7 +119,6 @@ export function createPartMesh(
             py.rotation.y = Math.PI / 4;
             py.material = mat;
             py.receiveShadows = true;
-            py.castShadows = true;
             return py;
         }
         default:

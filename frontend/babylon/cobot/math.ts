@@ -4,7 +4,7 @@ export function clamp(v: number, lo: number, hi: number) {
     return Math.max(lo, Math.min(hi, v));
 }
 
-export function projectTargetToReachEnvelope(target: Vector3, mountPos: Vector3, baseMinY: number, maxReach: number): Vector3 {
+export function projectTargetToReachEnvelope(target: Vector3, mountPos: Vector3, baseMinY: number, maxReach: number, toolReach = 0): Vector3 {
     const projected = target.clone();
     projected.y = Math.max(projected.y, baseMinY);
     const dx = projected.x - mountPos.x;
@@ -23,10 +23,16 @@ export function projectTargetToReachEnvelope(target: Vector3, mountPos: Vector3,
         projected.z = mountPos.z + 0.02;
     }
 
-    if (planar < maxReach) {
-        const p2 = Math.max(0.02, planar);
-        const maxVertical = Math.sqrt(Math.max(0.01, maxReach * maxReach - p2 * p2));
-        projected.y = Math.min(projected.y, mountPos.y + maxVertical - 0.04);
+    // IK solves the wrist above the tool, not the tool position itself. Constrain
+    // the vertical wrist offset first, then the remaining horizontal reach.
+    const wristY = clamp(projected.y + toolReach - mountPos.y, -maxReach + 0.04, maxReach - 0.04);
+    projected.y = mountPos.y + wristY - toolReach;
+    const allowedPlanar = Math.sqrt(Math.max(0, maxReach * maxReach - wristY * wristY));
+    const correctedPlanar = Math.hypot(projected.x - mountPos.x, projected.z - mountPos.z);
+    if (correctedPlanar > allowedPlanar) {
+        const scale = allowedPlanar / correctedPlanar;
+        projected.x = mountPos.x + (projected.x - mountPos.x) * scale;
+        projected.z = mountPos.z + (projected.z - mountPos.z) * scale;
     }
     return projected;
 }

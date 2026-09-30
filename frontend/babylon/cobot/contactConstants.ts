@@ -1,0 +1,11 @@
+
+
+export const PICK_HAND_PART_CLEARANCE = 0.032;
+
+export const PICK_HAND_CONTACT_TOLERANCE = 0.003;
+
+export const HAND_DISK_COLLIDER_RADIUS = 0.16;
+
+export const HAND_DISK_COLLIDER_HALF_HEIGHT = 0.018;
+
+export const HAND_DISK_CONTACT_SKIN = 0.016;

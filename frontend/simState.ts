@@ -1,5 +1,6 @@
 import { Vector3 } from '@babylonjs/core';
-import { PartShape, PartSize } from './types';
+import type { CobotState } from './babylon/cobot/stateTypes';
+import { PartShape,PartSize } from './types';
 
 export interface SimItem {
     id: string;
@@ -47,9 +48,18 @@ export interface CobotDebugLogEntry {
     snapDist?: number;
     planarDist?: number;
     verticalDist?: number;
+    ikTarget?: [number, number, number];
+    desiredTarget?: [number, number, number];
+    targetSource?: string;
+    stepIndex?: number;
+    programLen?: number;
+    stepAction?: string;
+    stepPos?: [number, number, number] | null;
 }
 
 export const simState = {
+    cobotStates: new Map<string, CobotState>(),
+    dropReservations: {} as Record<string, { position: Vector3; radius: number }>,
     items: [] as SimItem[],
     cameraDetections: [] as CameraDetection[],
     cameraFrames: {} as Record<string, string>,
@@ -58,6 +68,8 @@ export const simState = {
     cobotLoads: {} as Record<string, boolean>,
     cobotLogs: {} as Record<string, CobotDebugLogEntry[]>,
     reset: () => {
+        simState.cobotStates.clear();
+        simState.dropReservations = {};
         simState.items = [];
         simState.cameraDetections = [];
         simState.cameraFrames = {};

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { FactoryState, ITEM_COSTS, ItemType, PlacedItem, Direction, ItemConfig, MachineRuntimeState, PartTemplate } from './types';
+import { useCallback,useEffect,useState } from 'react';
+import { Direction,FactoryState,ITEM_COSTS,ItemConfig,ItemType,MachineRuntimeState,PartTemplate,PlacedItem } from './types';
 
 const STORAGE_KEY = 'cobot-factory-sim-v10';
 const LEGACY_STORAGE_KEY = 'cobot-factory-sim-v9';
@@ -400,7 +400,7 @@ class Store {
 
     subscribe = (listener: () => void) => {
         this.listeners.add(listener);
-        return () => this.listeners.delete(listener);
+        return () => { this.listeners.delete(listener); };
     };
 }
 

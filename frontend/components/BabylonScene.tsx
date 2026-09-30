@@ -1,28 +1,48 @@
-import React, { useEffect, useRef } from 'react';
 import {
-    Engine, Scene, ArcRotateCamera, Vector3, Color3, Color4,
-    HemisphericLight, DirectionalLight, ShadowGenerator,
-    MeshBuilder, PBRMaterial, TransformNode, Mesh, LinesMesh, FreeCamera, RenderTargetTexture,
-    PointerEventTypes, PhysicsAggregate, PhysicsShapeType,
-    HavokPlugin, AbstractMesh, StandardMaterial, GizmoManager
+AbstractMesh,
+ArcRotateCamera,ArcRotateCameraPointersInput,
+Color3,Color4,
+DirectionalLight,
+Engine,
+FreeCamera,
+GizmoManager,
+HavokPlugin,
+HemisphericLight,
+LinesMesh,
+Mesh,
+MeshBuilder,PBRMaterial,
+PhysicsAggregate,PhysicsShapeType,
+PointerEventTypes,
+RenderTargetTexture,
+Scene,
+ShadowGenerator,
+StandardMaterial,
+TransformNode,
+Vector3
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
-import { factoryStore } from '../store';
-import { simState } from '../simState';
-import { MachineRuntimeState, PartShape, PartSize, PartTemplate, PlacedItem } from '../types';
+import React,{ useEffect,useRef } from 'react';
+import { disposeCobotState,syncCobotConfig } from '../babylon/cobot/lifecycle';
+import { COBOT_PEDESTAL_HEIGHT,COBOT_PEDESTAL_SAFEZONE_RADIUS,CobotState,createCobot,tickCobot } from '../babylon/cobotMesh';
 import {
-    createBelt, createSender, createReceiver, createIndexedReceiver,
-    createPile, createTable, createCameraEntity, createPartMesh
+createBelt,
+createCameraEntity,
+createIndexedReceiver,
+createPartMesh,
+createPile,
+createReceiver,
+createSender,
+createTable
 } from '../babylon/entityMeshes';
-import { createCobot, tickCobot, CobotState, COBOT_PEDESTAL_SAFEZONE_RADIUS, COBOT_PEDESTAL_HEIGHT } from '../babylon/cobotMesh';
+import { simState } from '../simState';
+import { factoryStore } from '../store';
+import { MachineRuntimeState,PartShape,PartSize,PartTemplate,PlacedItem } from '../types';
 
 const ITEM_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const ITEM_SIZES: PartSize[] = ['small', 'medium', 'large'];
 const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
-const DISC_RADIUS = SIZE_DIAMETER.large / 2;
 const TILE_CENTER_Y = 0.545;
 const TABLE_CENTER_Y = 0.458;
-const COBOT_PLATFORM_CENTER_Y = 1.378;
 const COBOT_PLATFORM_TOP_Y = 1.37;
 const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
@@ -143,7 +163,7 @@ export const BabylonScene: React.FC = () => {
         camera.panningSensibility = 240;
         camera.attachControl(canvas, true);
         if (camera.inputs.attached.pointers) {
-            camera.inputs.attached.pointers.buttons = [0, 2];
+            (camera.inputs.attached.pointers as ArcRotateCameraPointersInput).buttons = [0, 2];
         }
 
         // ── LIGHTS ──────────────────────────────────────────────────────────
@@ -192,7 +212,7 @@ export const BabylonScene: React.FC = () => {
             // Update React state when drag ends
             gizmoManager.gizmos.positionGizmo.onDragEndObservable.add(() => {
                 const st = factoryStore.getState();
-                if (st.moveModeItemId && gizmoManager.attachedNode) {
+                if (st.moveModeItemId && gizmoManager.attachedNode instanceof TransformNode) {
                     const pos = gizmoManager.attachedNode.position;
                     const itemToMove = st.placedItems.find(i => i.id === st.moveModeItemId);
                     if (itemToMove) {
@@ -267,7 +287,7 @@ export const BabylonScene: React.FC = () => {
 
         // ── ENTITY REGISTRY ─────────────────────────────────────────────────
         const entityNodes = new Map<string, TransformNode>();
-        const cobotStates = new Map<string, CobotState>();
+        const cobotStates = simState.cobotStates;
         const previewCams = new Map<string, FreeCamera>();
         const previewRTTs = new Map<string, RenderTargetTexture>();
         const previewCaptureAt = new Map<string, number>();
@@ -349,6 +369,11 @@ export const BabylonScene: React.FC = () => {
                             state.gripperOpen = oldState.gripperOpen;
                             
                             // Execution state
+                            state.program = oldState.program;
+                            state.configuredProgramSignature = oldState.configuredProgramSignature;
+                            state.simTime = oldState.simTime;
+                            state.lastUnlockTime = oldState.lastUnlockTime;
+                            state.lastDroppedItemId = oldState.lastDroppedItemId;
                             state.phase = oldState.phase;
                             state.stepIndex = oldState.stepIndex;
                             state.targetedItem = oldState.targetedItem;
@@ -392,7 +417,8 @@ export const BabylonScene: React.FC = () => {
                 if (!placedItems.find(i => i.id === id)) {
                     disposeNode(node);
                     entityNodes.delete(id);
-                    cobotStates.delete(id);
+                    const state = cobotStates.get(id);
+                    if (state) disposeCobotState(state);
                     entitySigs.delete(id);
                 }
             }
@@ -446,60 +472,7 @@ export const BabylonScene: React.FC = () => {
                 cState.cameras = cameras;
                 cState.obstacles = obstacles.filter(i => i.id !== id);
                 const itm = placedItems.find(i => i.id === id);
-                if (itm) {
-                    cState.selfItem = itm;
-                    if (itm.config?.triggerUnlock && (cState as any).lastUnlockTime !== itm.config.triggerUnlock) {
-                        (cState as any).lastUnlockTime = itm.config.triggerUnlock;
-                        cState.safetyStopped = false;
-                        cState.phase = 'idle';
-                        if (cState.grabbedItem) {
-                            cState.grabbedItem.state = 'free';
-                            cState.grabbedItem = null;
-                        }
-                        cState.targetedItem = null;
-                        cState.blockedTimer = 0;
-                        cState.targetTimer = 0;
-                        cState.recoveryTimer = 2.0;
-                        cState.safetySpeedFactor = 1;
-                        cState.reducedSpeedActive = false;
-                        cState.desiredTarget.copyFrom(cState.idleTarget);
-                    }
-                    if (itm.config?.cobotCollisionEnabled === false) {
-                        cState.safetyStopped = false;
-                        cState.blockedTimer = 0;
-                        cState.partContactTimer = 0;
-                        cState.safetySpeedFactor = 1;
-                        cState.reducedSpeedActive = false;
-                        if (itm.config?.collisionStopped) {
-                            st.updatePlacedItem(id, { config: { ...itm.config, collisionStopped: false } });
-                        }
-                    }
-                    if (!itm.config?.collisionStopped) cState.safetyStopped = false;
-                    const configuredHome = itm.config?.cobotHomeTarget;
-                    const nextHome = configuredHome
-                        ? new Vector3(configuredHome[0], configuredHome[1], configuredHome[2])
-                        : new Vector3(itm.position[0], itm.position[1] + 2.2, itm.position[2]);
-                    if (Vector3.Distance(cState.idleTarget, nextHome) > 0.001) {
-                        cState.idleTarget.copyFrom(nextHome);
-                    }
-                    cState.manualControl = itm.config?.cobotManualControl === true;
-                    cState.manualTarget = itm.config?.cobotManualTarget
-                        ? new Vector3(itm.config.cobotManualTarget[0], itm.config.cobotManualTarget[1], itm.config.cobotManualTarget[2])
-                        : null;
-                    if (cState.manualControl && cState.manualTarget) {
-                        cState.safetyStopped = false;
-                        cState.phase = 'idle';
-                        cState.targetedItem = null;
-                        cState.yieldTarget = null;
-                        cState.desiredTarget.copyFrom(cState.manualTarget);
-                    }
-                    cState.program = itm.config?.program || [];
-                    cState.speed = itm.config?.speed || 1.0;
-                    cState.pickColors = itm.config?.pickColors || [];
-                    cState.pickSizes = itm.config?.pickSizes || [];
-                    cState.linkedCameraIds = itm.config?.linkedCameraIds || [];
-                    cState.autoOrganize = itm.config?.autoOrganize === true;
-                }
+                if (itm) syncCobotConfig(cState, itm);
             }
             const activeCobotIds = new Set(cobotStates.keys());
             const storeState = factoryStore.getState();
@@ -620,12 +593,6 @@ export const BabylonScene: React.FC = () => {
             teachZoneSig = nextSig;
             clearTeachZones();
             if (!selected || selected.type !== 'cobot') return;
-            const isOnOtherCobot = (pos: [number, number, number]) => st.placedItems.some(item =>
-                item.id !== selected.id &&
-                item.type === 'cobot' &&
-                Math.abs(pos[0] - item.position[0]) <= COBOT_PLATFORM_HALF_W &&
-                Math.abs(pos[2] - item.position[2]) <= COBOT_PLATFORM_HALF_D
-            );
             if (showRange) {
                 const baseRotY = [Math.PI, Math.PI / 2, 0, -Math.PI / 2][selected.rotation] ?? 0;
                 const mountLocal = cobotMountLocal(selected.config);
@@ -895,6 +862,7 @@ export const BabylonScene: React.FC = () => {
                 Promise.resolve(rtt.readPixels(0, 0)).then((pixels) => {
                     previewPending.delete(camItem.id);
                     if (!pixels) return;
+                    const pixelBytes = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
                     const w = rtt!.getSize().width;
                     const h = rtt!.getSize().height;
                     const canvas = document.createElement('canvas');
@@ -908,9 +876,9 @@ export const BabylonScene: React.FC = () => {
                         const src = (h - 1 - y) * row;
                         const dst = y * row;
                         for (let i = 0; i < row; i += 4) {
-                            img.data[dst + i] = pixels[src + i];
-                            img.data[dst + i + 1] = pixels[src + i + 1];
-                            img.data[dst + i + 2] = pixels[src + i + 2];
+                            img.data[dst + i] = pixelBytes[src + i];
+                            img.data[dst + i + 1] = pixelBytes[src + i + 1];
+                            img.data[dst + i + 2] = pixelBytes[src + i + 2];
                             img.data[dst + i + 3] = 255;
                         }
                     }
@@ -1139,16 +1107,6 @@ export const BabylonScene: React.FC = () => {
             }
         }
 
-        // ── GRID MAP ────────────────────────────────────────────────────────
-        function getGridMap() {
-            const map = new Map<string, PlacedItem>();
-            factoryStore.getState().placedItems.forEach(item => {
-                const key = `${Math.round(item.position[0])},${Math.round(item.position[2])}`;
-                map.set(key, item);
-            });
-            return map;
-        }
-
         function itemSupportTopY(item: PlacedItem): number {
             if (item.type === 'belt') return item.config?.beltHeight || TILE_CENTER_Y;
             if (['sender', 'receiver', 'indexed_receiver'].includes(item.type)) return item.config?.machineHeight || TILE_CENTER_Y;
@@ -1166,7 +1124,7 @@ export const BabylonScene: React.FC = () => {
             return itemSupportTopY(item) + half;
         }
 
-        function itemSupportsPart(item: PlacedItem, x: number, z: number, radius = DISC_RADIUS): boolean {
+        function itemSupportsPart(item: PlacedItem, x: number, z: number): boolean {
             if (item.type === 'camera') return false;
             const dx = Math.abs(x - item.position[0]);
             const dz = Math.abs(z - item.position[2]);
@@ -1358,66 +1316,10 @@ export const BabylonScene: React.FC = () => {
             }
             captureCameraPreviews(st);
 
-        function syncCobotStateFromStore(st: any, items: PlacedItem[]) {
-            for (const itm of items) {
-                if (itm.type !== 'cobot') continue;
-                const cState = cobotStates.get(itm.id);
-                if (!cState) continue;
-                cState.selfItem = itm;
-                cState.speed = itm.config?.speed || 1.0;
-                cState.manualControl = itm.config?.cobotManualControl === true;
-                cState.manualTarget = itm.config?.cobotManualTarget ? new Vector3(...itm.config.cobotManualTarget) : null;
-                cState.program = itm.config?.program || [];
-                // tuningMode is driven by the UI config flag, NOT by move-mode gizmo.
-                cState.tuningMode = itm.config?.cobotTuningMode === true;
-                if (!itm.config?.collisionStopped) cState.safetyStopped = false;
+            for (const item of placedItems) {
+                const state = cobotStates.get(item.id);
+                if (state) syncCobotConfig(state, item);
             }
-        }
-
-        function cobotRuntimeState(state: CobotState, simActive: boolean): MachineRuntimeState {
-            if (!simActive && !state.manualControl && state.selfItem?.config?.cobotTuningMode !== true) {
-                return { health: 'idle', label: 'Idle', detail: 'Simulation stopped', stepIndex: state.stepIndex };
-            }
-            if (state.safetyStopped) return { health: 'warning', label: 'Safety Stop', detail: 'Collision detected or limit reached', stepIndex: state.stepIndex };
-            if (state.isOutOfRange) return { health: 'warning', label: 'Out of Range', detail: 'Point too far for arm configuration', stepIndex: state.stepIndex };
-            if (state.yieldTarget && state.simTime < state.yieldUntil) return { health: 'warning', label: 'Yielding', detail: 'Giving way to neighbor...', stepIndex: state.stepIndex };
-            if (state.phase === 'manual') return { health: 'running', label: 'Manual Control', detail: state.manualControl ? 'Jogging...' : 'Tuning...', stepIndex: state.stepIndex };
-            if (state.phase === 'recovery') return { health: 'warning', label: 'Recovering', detail: 'Returning to safe position...', stepIndex: state.stepIndex };
-            if (['pick_hover', 'pick_descend', 'pick_attach', 'pick_recenter'].includes(state.phase)) {
-                return { health: 'running', label: 'Picking', detail: 'Acquiring part...', stepIndex: state.stepIndex };
-            }
-            if (['hover_drop', 'descend_drop', 'release', 'drop_recenter'].includes(state.phase)) {
-                return { health: 'running', label: 'Placing', detail: 'Releasing part...', stepIndex: state.stepIndex };
-            }
-            if (['lift', 'transit_drop', 'next'].includes(state.phase)) {
-                return { health: 'running', label: 'Moving', detail: 'In transit...', stepIndex: state.stepIndex };
-            }
-            if (state.phase === 'wait_step') return { health: 'running', label: 'Waiting', detail: 'Dwell step...', stepIndex: state.stepIndex };
-            if (state.phase === 'idle' && (state.program?.length || 0) > 0) {
-                return { health: 'running', label: 'Ready', detail: 'Waiting for next valid pickup', stepIndex: state.stepIndex };
-            }
-            return { health: 'idle', label: 'Idle', detail: 'No programmed work', stepIndex: state.stepIndex };
-        }
-
-        function applyCobotStatusVisual(state: CobotState, runtime: MachineRuntimeState) {
-            if (!state.statusDisplayMat) return;
-            let hex = '#334155';
-            let emissive = new Color3(0.02, 0.03, 0.04);
-            if (runtime.health === 'running') {
-                hex = '#22c55e';
-                emissive = Color3.FromHexString('#22c55e').scale(0.45);
-            } else if (runtime.health === 'warning') {
-                hex = '#f59e0b';
-                emissive = Color3.FromHexString('#f59e0b').scale(0.5);
-            } else if (runtime.health === 'stopped' || runtime.health === 'error') {
-                hex = '#ef4444';
-                emissive = Color3.FromHexString('#ef4444').scale(0.45);
-            }
-            state.statusDisplayMat.albedoColor = Color3.FromHexString(hex);
-            state.statusDisplayMat.emissiveColor = emissive;
-        }
-            // Keep cobot runtime state in sync with latest store config every frame.
-            syncCobotStateFromStore(st, placedItems);
 
             // Sync gizmo state
             if (moveModeItemId !== prevMoveModeItemId) {
@@ -1439,7 +1341,7 @@ export const BabylonScene: React.FC = () => {
             } else if (moveModeItemId) {
                 // If the user changed the position via UI sliders, ensure the Gizmo visually stays synced without triggering an onDrag
                 const targetItem = placedItems.find(i => i.id === moveModeItemId);
-                if (targetItem && gizmoManager.attachedNode) {
+                if (targetItem && gizmoManager.attachedNode instanceof TransformNode) {
                     // Update only if distance is significant to avoid fighting with onDrag
                     const nPos = gizmoManager.attachedNode.position;
                     if (Math.abs(nPos.x - targetItem.position[0]) > 0.01 || Math.abs(nPos.z - targetItem.position[2]) > 0.01) {

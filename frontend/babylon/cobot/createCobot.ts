@@ -1,46 +1,42 @@
 import {
-    Color3,
-    Mesh,
-    MeshBuilder,
-    Scene,
-    StandardMaterial,
-    TransformNode,
-    Vector3,
+Color3,
+Mesh,
+MeshBuilder,
+Scene,
+StandardMaterial,
+TransformNode,
+Vector3,
 } from '@babylonjs/core';
 import type { PlacedItem } from '../../types';
 import {
-    COBOT_BODY_D,
-    COBOT_BODY_H,
-    COBOT_BODY_W,
-    COBOT_FOREARM_LENGTH,
-    COBOT_GRIPPER_TIP_OFFSET,
-    COBOT_HAND_LINK_LENGTH,
-    COBOT_PEDESTAL_BOTTOM_RADIUS_MAX,
-    COBOT_PEDESTAL_BOTTOM_RADIUS_MIN,
-    COBOT_PEDESTAL_HEIGHT,
-    COBOT_PLATFORM_D,
-    COBOT_PLATFORM_MARGIN,
-    COBOT_PLATFORM_THICKNESS,
-    COBOT_PLATFORM_TOP_Y,
-    COBOT_PLATFORM_W,
-    COBOT_UPPER_ARM_DIAMETER_DEFAULT,
-    COBOT_UPPER_ARM_LENGTH,
-    COBOT_WRIST_LINK_LENGTH,
-    DISC_H,
-    STACK_SLOT_COLORS,
-} from './constants';
-import {
-    cobotDefaultAngles,
-    cobotForearmDiameter,
-    cobotForearmLength,
-    cobotUpperArmDiameter,
-    cobotUpperArmLength,
-    cobotWristDiameter,
-    cobotWristLength,
+cobotForearmDiameter,
+cobotForearmLength,
+cobotUpperArmDiameter,
+cobotUpperArmLength,
+cobotWristDiameter,
+cobotWristLength
 } from './cobotConfig';
-import { box, cyl, pbr } from './meshBuilders';
+import {
+COBOT_BODY_D,
+COBOT_BODY_H,
+COBOT_BODY_W,
+COBOT_GRIPPER_TIP_OFFSET,
+COBOT_HAND_LINK_LENGTH,
+COBOT_PEDESTAL_BOTTOM_RADIUS_MAX,
+COBOT_PEDESTAL_BOTTOM_RADIUS_MIN,
+COBOT_PEDESTAL_HEIGHT,
+COBOT_PLATFORM_D,
+COBOT_PLATFORM_MARGIN,
+COBOT_PLATFORM_THICKNESS,
+COBOT_PLATFORM_TOP_Y,
+COBOT_PLATFORM_W,
+COBOT_UPPER_ARM_DIAMETER_DEFAULT,
+DISC_H,
+STACK_SLOT_COLORS
+} from './constants';
 import { clamp } from './math';
-import type { CobotState, StackSlot } from './stateTypes';
+import { box,cyl,pbr } from './meshBuilders';
+import type { CobotState,StackSlot } from './stateTypes';
 
 function defaultCobotIdleTarget(item: PlacedItem): Vector3 {
     return new Vector3(
@@ -394,12 +390,14 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         partContactTimer: 0,
         lastProbePos: idleTarget.clone(),
         simTime: 0,
+        itemMotionTracker: new WeakMap(),
         targetTimer: 0,
         skippedTargetIds: {},
         safetyStopped: false,
         isOutOfRange: false,
         stalledInternal: false,
         recoveryTimer: 0,
+        recoveryElapsed: 0,
         overdriveScore: 0,
         avoidanceSide: 0,
         retreatTarget: null,
@@ -431,6 +429,7 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         activeDropTarget: null,
         position: item.position, baseRotY,
         program: item.config?.program || [],
+        configuredProgramSignature: JSON.stringify(item.config?.program ?? []),
         speed: item.config?.speed || 1.0,
         selfItem: item,
         cameras: [], obstacles: [],
@@ -442,7 +441,6 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         manualControl: item.config?.cobotManualControl === true,
         manualTarget: configTargetToVector(item.config?.cobotManualTarget),
         stackSlots, mountCollisionRadius, isFull: false,
-        sensorLights,
         tuningMode: false,
         sensorHazards: [0, 0, 0, 0],
         sensorMinDist: 2,

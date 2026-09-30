@@ -1,4 +1,3 @@
-import React from 'react';
 import { BabylonScene } from './components/BabylonScene';
 import { UI } from './components/UI';
 

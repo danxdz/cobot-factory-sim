@@ -5,11 +5,12 @@ import { createCobot, tickCobot } from '../babylon/cobotMesh.ts';
 import { partHalfHeight } from '../babylon/cobot/partGeometry.ts';
 import { simState } from '../simState.ts';
 import { factoryStore } from '../store.ts';
-import { syncCobotConfig, disposeCobotState } from '../babylon/cobot/lifecycle.ts';
+import { syncCobotConfig, disposeCobotState, resetCobotRun } from '../babylon/cobot/lifecycle.ts';
 import { currentDropTarget } from '../babylon/cobot/dropTargets.ts';
 import { reserveDropTarget, releaseDropReservation } from '../babylon/cobot/reservations.ts';
 
 function setup(t, { offset = 0, shape = 'disc', collisions = true, belt = false } = {}) {
+  for (const state of simState.cobotStates.values()) disposeCobotState(state);
   simState.reset();
   const engine = new NullEngine();
   const scene = new Scene(engine);
@@ -44,7 +45,9 @@ function runUntil(state, predicate, beforeTick = () => {}, seconds = 45) {
 for (const shape of ['disc', 'can', 'box', 'pyramid']) {
   test(`picks and places an offset ${shape} with collision checks`, t => {
     const { state, part } = setup(t, { offset: 0.8, shape });
+    const phases = {};
     runUntil(state, () => state.phase === 'drop_recenter', () => {
+      phases[state.phase] = (phases[state.phase] ?? 0) + 1;
       if (state.phase === 'descend_drop') {
         const tip = state.gripperTip.getAbsolutePosition();
         assert.ok(Math.hypot(tip.x - 2.5, tip.z) < 0.2, 'descent must start over the destination');
@@ -53,8 +56,66 @@ for (const shape of ['disc', 'can', 'box', 'pyramid']) {
     assert.equal(part.state, 'free');
     assert.ok(Vector3.Distance(part.pos, new Vector3(2.5, 1 + partHalfHeight(part), 0)) < 0.001);
     assert.equal(state.lastDroppedItemId, part.id);
+    assert.ok(state.simTime < 8, 'an unobstructed cycle must not crawl through repeated collision replans');
+    t.diagnostic(`cycle time: ${state.simTime.toFixed(2)} simulated seconds`);
+    t.diagnostic(JSON.stringify(Object.fromEntries(Object.entries(phases).map(([phase, frames]) => [phase, +(frames / 60).toFixed(2)]))));
   });
 }
+
+for (const type of ['receiver', 'indexed_receiver']) {
+  test(`places a part on ${type} without retrying above the landing surface`, t => {
+    const { state, part } = setup(t);
+    const destination = state.obstacles.find(item => item.id === 'dest');
+    destination.type = type;
+    destination.config = { machineHeight: 0.538 };
+    state.program[1] = { action: 'drop', pos: [2.5, 0.538, 0] };
+    runUntil(state, () => state.lastDroppedItemId === part.id);
+    assert.equal(part.state, 'free');
+    assert.ok(Math.abs(part.pos.y - 0.538 - partHalfHeight(part)) < 0.001);
+    assert.ok(Math.hypot(part.pos.x - 2.5, part.pos.z) < 0.001);
+  });
+}
+
+test('picks and sorts onto its own platform', t => {
+  const { state, part } = setup(t);
+  state.program[1] = { action: 'drop', pos: [0, 0.6, 0] };
+  runUntil(state, () => state.lastDroppedItemId === part.id);
+  assert.equal(part.state, 'free');
+  assert.ok(Math.abs(part.pos.x) < 1.1 && Math.abs(part.pos.z) < 1.1);
+  t.diagnostic(`own platform cycle: ${state.simTime.toFixed(2)} simulated seconds`);
+});
+
+test('waits with its payload when another robot owns the destination, then resumes', t => {
+  const { state, part } = setup(t);
+  runUntil(state, () => state.phase === 'transit_drop');
+  simState.dropReservations.other = { position: new Vector3(2.5, 1, 0), radius: 0.4 };
+  for (let frame = 0; frame < 120; frame++) tickCobot(state, 1 / 60, true);
+  assert.equal(state.grabbedItem, part);
+  assert.equal(part.state, 'grabbed');
+  assert.equal(state.phase, 'transit_drop');
+  assert.equal(state.gripperOpen, false);
+  delete simState.dropReservations.other;
+  runUntil(state, () => state.lastDroppedItemId === part.id);
+  assert.ok(Math.hypot(part.pos.x - 2.5, part.pos.z) < 0.001);
+});
+
+test('stopping and restarting retains registered controllers and completes a new cycle', t => {
+  const { state, part } = setup(t);
+  runUntil(state, () => state.grabbedItem === part);
+  resetCobotRun(state);
+  simState.reset();
+  assert.equal(simState.cobotStates.get('test'), state);
+  assert.equal(state.grabbedItem, null);
+  assert.equal(state.targetedItem, null);
+  assert.equal(state.phase, 'idle');
+  assert.equal(simState.items.length, 0);
+  const nextPart = { ...part, id: 'next-run', pos: new Vector3(0, 1 + partHalfHeight(part), 2.5), state: 'free' };
+  simState.items.push(nextPart);
+  for (let frame = 0; frame < 45 * 60 && state.lastDroppedItemId !== nextPart.id; frame++) {
+    for (const registered of simState.cobotStates.values()) tickCobot(registered, 1 / 60, true);
+  }
+  assert.equal(state.lastDroppedItemId, nextPart.id);
+});
 
 test('pause preserves an acquired part and resumes the same pickup', t => {
   const { state, part } = setup(t);

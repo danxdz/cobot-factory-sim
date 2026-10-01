@@ -22,7 +22,7 @@ Vector3
 } from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import React,{ useEffect,useRef } from 'react';
-import { disposeCobotState,syncCobotConfig } from '../babylon/cobot/lifecycle';
+import { disposeCobotState,resetCobotRun,syncCobotConfig } from '../babylon/cobot/lifecycle';
 import { COBOT_PEDESTAL_HEIGHT,COBOT_PEDESTAL_SAFEZONE_RADIUS,CobotState,createCobot,tickCobot } from '../babylon/cobotMesh';
 import {
 createBelt,
@@ -1803,8 +1803,11 @@ export const BabylonScene: React.FC = () => {
         });
 
         // ── STORE SUBSCRIPTION ───────────────────────────────────────────────
+        let wasRunning = factoryStore.getState().isRunning;
         const unsub = factoryStore.subscribe(() => {
             const st = factoryStore.getState();
+            const stopped = wasRunning && !st.isRunning;
+            wasRunning = st.isRunning;
             // When starting sim, pre-spawn pile items
             if (st.isRunning && simState.items.length === 0) {
                 st.placedItems.forEach(item => {
@@ -1843,7 +1846,8 @@ export const BabylonScene: React.FC = () => {
                     }
                 });
             }
-            if (!st.isRunning) {
+            if (stopped) {
+                for (const state of cobotStates.values()) resetCobotRun(state);
                 simState.reset();
                 Object.keys(lastSpawnTime).forEach(k => delete lastSpawnTime[k]);
             }
@@ -1859,6 +1863,8 @@ export const BabylonScene: React.FC = () => {
 
         return () => {
             unsub();
+            for (const state of cobotStates.values()) disposeCobotState(state);
+            simState.reset();
             clearToolpaths();
             for (const id of [...previewCams.keys()]) disposeCameraPreview(id);
             window.removeEventListener('resize', onResize);

@@ -1,7 +1,7 @@
 import { Vector3 } from '@babylonjs/core';
 import { DISC_H,DROP_HOVER_CLEARANCE,DROP_RECENTER_CLEARANCE,PICK_HOVER_CLEARANCE } from './constants';
 import { captureDropExitTarget,computeDropTarget,currentDropTarget,dropPlacementState,resolveAutoDropTarget } from './dropTargets';
-import { carriedPayloadHeight,dropBaseCenterY,dropObstacles,itemFootprintHit,partHint,quantizeHeight,stackAwareClearanceAt,stackCenterYAt,supportTopAt,wallTopAt } from './geometry';
+import { carriedPayloadHeight,dropBaseCenterY,dropObstacles,itemFootprintHit,partHint,quantizeHeight,stackAwareClearanceAt,stackCenterYAt,supportTopAt } from './geometry';
 import { PartLike,partHalfHeight } from './partGeometry';
 import { carryTravelY,currentDropAnchor,currentPickAnchor,nextPickWaitTarget,nextProgramActionIndex } from './programTargets';
 import { releaseDropReservation } from './reservations';
@@ -54,11 +54,7 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                         if (state.autoDropTarget) {
                             state.phase = 'transit_drop';
                         }
-                        else {
-                            if (state.grabbedItem) { state.grabbedItem.state = 'free'; state.grabbedItem = null;
-                        releaseDropReservation(state); }
-                            state.phase = 'idle';
-                        }
+                        // Keep holding at clearance height until a slot is free.
                     } else if (nextDropIndex !== null) {
                         state.stepIndex = nextDropIndex;
                         state.phase = 'transit_drop';
@@ -70,7 +66,9 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                 const tgt = currentDropTarget(state);
                 if (!tgt) {
                     state.activeDropTarget = null;
-                    state.phase = state.grabbedItem ? 'idle' : 'next';
+                    state.phase = state.grabbedItem ? 'transit_drop' : 'next';
+                    state.desiredTarget.copyFrom(state.ikTarget);
+                    state.gripperOpen = !state.grabbedItem;
                     break;
                 }
                 // Lock the target immediately to prevent slot-switching during transit/hover
@@ -88,7 +86,9 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                 const tgt = currentDropTarget(state);
                 if (!tgt) {
                     state.activeDropTarget = null;
-                    state.phase = state.grabbedItem ? 'idle' : 'next';
+                    state.phase = state.grabbedItem ? 'transit_drop' : 'next';
+                    state.desiredTarget.copyFrom(state.ikTarget);
+                    state.gripperOpen = !state.grabbedItem;
                     break;
                 }
                 const selfDrop = !!(state.selfItem && itemFootprintHit(state.selfItem, tgt.x, tgt.z, 0.08));
@@ -117,17 +117,16 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                 const placement = dropPlacementState(state);
                 if (!tgt || !placement) {
                     state.activeDropTarget = null;
-                    state.phase = state.grabbedItem ? 'idle' : 'next';
+                    state.phase = state.grabbedItem ? 'transit_drop' : 'next';
+                    state.desiredTarget.copyFrom(state.ikTarget);
+                    state.gripperOpen = !state.grabbedItem;
                     break;
                 }
                 
 	                const partHalf = state.grabbedItem ? partHalfHeight(state.grabbedItem) : DISC_H / 2;
 	                // Place the carried part center on the landing height by commanding the gripper tip above it.
 	                const safeDropY = quantizeHeight(
-	                    Math.max(
-	                        placement.landingY + partHalf + 0.006,
-	                        wallTopAt(tgt.x, tgt.z, dropObstacles(state)) + partHalf + 0.006
-	                    ),
+                            placement.landingY + partHalf + 0.006,
 	                    0.01
 	                );
 	                state.desiredTarget.set(tgt.x, safeDropY, tgt.z);
@@ -162,15 +161,16 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                 const placement = dropPlacementState(state);
                 if (!placement) {
                     state.activeDropTarget = null;
-                    state.phase = state.grabbedItem ? 'idle' : 'next';
+                    state.phase = state.grabbedItem ? 'transit_drop' : 'next';
+                    state.desiredTarget.copyFrom(state.ikTarget);
+                    state.gripperOpen = !state.grabbedItem;
                     break;
                 }
                 const part = state.grabbedItem;
                 const partHalf = part ? partHalfHeight(part) : DISC_H / 2;
-                const releaseApproachY = Math.max(
-                    placement.landingY + partHalf + 0.008,
-                    wallTopAt(placement.target.x, placement.target.z, dropObstacles(state)) + partHalf + 0.008
-                );
+                // Transit clears walls; the final vertical approach reaches the
+                // actual landing surface. Wall height here prevents release.
+                const releaseApproachY = placement.landingY + partHalf + 0.008;
                 const releaseTgt = state.lockedDropTarget || placement.target;
                 state.desiredTarget.set(releaseTgt.x, releaseApproachY, releaseTgt.z);
                 state.gripperTip.computeWorldMatrix(true);

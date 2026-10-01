@@ -5,7 +5,7 @@ import { PlacedItem } from '../../types';
 import { armHitsObstacle,armHitsPart,clampPickupHandAboveParts,collectArmSamples,isSoftAvoidCollision,requestPredictiveReplan,resolveArmLinkStackClearance,resolveHandDiskPartContacts,selfCollisionRisk,startRecoveryRetreat } from './collision';
 import { COBOT_ARM_HARD_STOP_DIST,COBOT_ARM_REDUCED_SPEED_DIST,COBOT_BODY_D,COBOT_BODY_W,COBOT_NEIGHBOR_YIELD_TRIGGER,COBOT_PEDESTAL_HEIGHT,COBOT_PLATFORM_TOP_Y,COBOT_SELF_REDUCED_SPEED_DIST,CONTACT_STALL_TIMEOUT,DISC_RADIUS,HAND_SAFETY_EXTRA_RADIUS,MAX_RECOVERY_ATTEMPTS,OVERDRIVE_HIT_PENALTY,OVERDRIVE_STALL_PENALTY,PART_CONTACT_STOP_TIMEOUT,PART_CONTACT_WARN_TIMEOUT,PICK_GRAB_RADIUS,SAFETY_HARD_STOP_DIST,SAFETY_MIN_SPEED_FACTOR,SAFETY_REDUCED_SPEED_DIST,STALL_PROGRESS_EPSILON,STUCK_STALL_TIMEOUT } from './constants';
 import { currentDropTarget,isSelfPlatformDropPhase } from './dropTargets';
-import { carriedPayloadRadius,clampTargetAboveSupports,dropObstacles,isPickupContactOverride,itemFootprintHit,machineTopY,normalizeAngle,supportTopAt,toolSurfaceClearance } from './geometry';
+import { carriedPayloadRadius,clampTargetAboveSupports,dropObstacles,isPickupContactOverride,itemFootprintHit,machineTopY,supportTopAt,toolSurfaceClearance } from './geometry';
 import { solvePose } from './kinematics';
 import { clamp,projectTargetToReachEnvelope } from './math';
 import { partHalfHeight,partRadiusForSpec } from './partGeometry';
@@ -307,22 +307,9 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
             : 1;
         desiredVelocity = dir.scale(cruiseSpeed * ramp);
     }
-    let baseTravelYawTarget: number | null = null;
-    if (!relaxedContactMotion && Math.hypot(desiredVelocity.x, desiredVelocity.z) > 0.001) {
-        const targetYaw = Math.atan2(state.desiredTarget.x - mountPos.x, state.desiredTarget.z - mountPos.z);
-        baseTravelYawTarget = normalizeAngle(targetYaw - state.baseRotY);
-        const yawError = Math.abs(normalizeAngle(baseTravelYawTarget - state.basePivot.rotation.y));
-        const planarScale = clamp((0.75 - yawError) / 0.55, 0.08, 1);
-        desiredVelocity.x *= planarScale;
-        desiredVelocity.z *= planarScale;
-        if (planarScale < 0.35 && state.desiredTarget.y > state.ikTarget.y + 0.02) {
-            desiredVelocity.y = Math.max(desiredVelocity.y, cruiseSpeed * 0.45);
-        }
-        if (planarScale < 0.98) {
-            state.reducedSpeedActive = true;
-            state.safetySpeedFactor = Math.min(state.safetySpeedFactor, Math.max(0.12, planarScale));
-        }
-    }
+    // IK limits base rotation for the current Cartesian target. Gating travel on
+    // the future waypoint's yaw creates a feedback loop: movement must happen
+    // before yaw can change. Proximity and collision checks below govern speed.
     {
         if (relaxedContactMotion) {
             const velocityBlend = Math.min(1, accel * delta);

@@ -49,6 +49,13 @@ export function getOrganizedDropTarget(
 ): Vector3 | null {
     const grabbedOrHint = itemHint ?? (state.grabbedItem ? partHint(state.grabbedItem) : null);
     if (!grabbedOrHint) return null;
+    // Receivers consume parts at their center; they are not storage grids.
+    if (container.type === 'receiver' || container.type === 'indexed_receiver') {
+        const target = new Vector3(...container.position);
+        if (isTemporarilyAvoidedDropTarget(state, target)) return null;
+        target.y = dropBaseCenterY(state, target, grabbedOrHint);
+        return target;
+    }
     const gridW = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[0] || 3)));
     const gridD = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[1] || 3)));
     const sizeW = container.config?.machineSize?.[0] || container.config?.tableSize?.[0] || (container.type === 'table' ? 1.8 : 2);

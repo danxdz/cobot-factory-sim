@@ -37,6 +37,28 @@ export function resetExecution(state: CobotState) {
     state.desiredTarget.copyFrom(state.ikTarget);
 }
 
+/** Start a fresh run while retaining the robot's meshes and scene registration. */
+export function resetCobotRun(state: CobotState) {
+    resetExecution(state);
+    if (state.grabbedItem?.state === 'grabbed') state.grabbedItem.state = 'free';
+    state.grabbedItem = null;
+    state.program = state.selfItem?.config?.program ?? [];
+    state.isAutoProgram = false;
+    state.gripperOpen = true;
+    state.safetyStopped = false;
+    state.recoveryElapsed = 0;
+    state.simTime = 0;
+    state.skippedTargetIds = {};
+    state.itemMotionTracker = new WeakMap();
+    state.lastDroppedItemId = undefined;
+    state.lastMotionTraceAt = undefined;
+    state.avoidDropTarget = null;
+    state.avoidDropUntil = 0;
+    state.pathReplanCooldown = 0;
+    state.precalculatedPath = [];
+    state.isFull = false;
+}
+
 /** Synchronize configuration without overwriting generated work or live safety state. */
 export function syncCobotConfig(state: CobotState, item: PlacedItem) {
     const config = item.config ?? {};

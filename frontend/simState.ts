@@ -68,7 +68,8 @@ export const simState = {
     cobotLoads: {} as Record<string, boolean>,
     cobotLogs: {} as Record<string, CobotDebugLogEntry[]>,
     reset: () => {
-        simState.cobotStates.clear();
+        // Controllers belong to the mounted scene, not to a simulation run.
+        // Removing them here leaves existing robot meshes without a tick handler.
         simState.dropReservations = {};
         simState.items = [];
         simState.cameraDetections = [];

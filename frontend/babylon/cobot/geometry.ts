@@ -1,7 +1,7 @@
 import { Vector3 } from '@babylonjs/core';
 import { SimItem,simState } from '../../simState';
 import { PartShape,PartSize,PlacedItem } from '../../types';
-import { COBOT_PLATFORM_D,COBOT_PLATFORM_TOP_Y,COBOT_PLATFORM_W,DISC_RADIUS } from './constants';
+import { COBOT_PLATFORM_D,COBOT_PLATFORM_TOP_Y,COBOT_PLATFORM_W,DISC_RADIUS,HAND_SAFETY_EXTRA_RADIUS } from './constants';
 import { HAND_DISK_COLLIDER_RADIUS } from './contactConstants';
 import { clamp } from './math';
 import { PartLike,partHalfHeight,partRadiusForSpec } from './partGeometry';
@@ -39,7 +39,12 @@ export function quantizeHeight(y: number, step = 0.04): number {
 export function stackAwareClearanceAt(state: CobotState, x: number, z: number, carrying: boolean): number {
     const obstacles = dropObstacles(state);
     const payloadHeight = carrying ? carriedPayloadHeight(state) : 0;
-    const wallClear = wallTopAt(x, z, obstacles) + (carrying ? 0.24 + payloadHeight : 0.36);
+    // Match the loaded tool capsule used by collectArmLinks, including its
+    // clearance margin, so transport does not repeatedly collide and replan.
+    const toolClearance = carrying
+        ? Math.max(0.24 + payloadHeight, 0.11 + HAND_SAFETY_EXTRA_RADIUS + carriedPayloadRadius(state) + 0.16)
+        : 0.36;
+    const wallClear = wallTopAt(x, z, obstacles) + toolClearance;
     const partSpec: PartLike = state.grabbedItem ?? { shape: 'disc', size: 'medium' };
     const stackBase = dropBaseCenterY(state, new Vector3(x, 0, z), partSpec);
     const stackCenter = stackCenterYAt(x, z, stackBase, partSpec, state.grabbedItem, 0.34);
@@ -47,7 +52,7 @@ export function stackAwareClearanceAt(state: CobotState, x: number, z: number, c
     const supportTop = supportTopAt(x, z, obstacles);
     const stackRise = Math.max(0, stackTop - supportTop);
     const riseBoost = clamp(stackRise * 0.28, 0, 0.24);
-    const stackClear = stackTop + (carrying ? 0.24 + payloadHeight : 0.3) + riseBoost;
+    const stackClear = stackTop + toolClearance + riseBoost;
     return Math.max(wallClear, stackClear);
 }
 

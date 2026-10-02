@@ -37,6 +37,9 @@ STACK_SLOT_COLORS
 import { clamp } from './math';
 import { box,cyl,pbr } from './meshBuilders';
 import type { CobotState,StackSlot } from './stateTypes';
+import { solvePose } from './kinematics';
+import { projectCobotTarget } from './reach';
+import { normalizeAngle } from './geometry';
 
 function defaultCobotIdleTarget(item: PlacedItem): Vector3 {
     return new Vector3(
@@ -463,5 +466,20 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         jointTorques: [0, 0, 0, 0],
         lastJointAngles: [0, 0, 0, 0],
     };
+    // Draw the same home pose that the controller starts from. Previously all
+    // joints were zero (a straight upright arm) while ikTarget was at home,
+    // causing a multi-metre tool jump on the first simulation frame.
+    root.computeWorldMatrix(true);
+    basePivot.computeWorldMatrix(true);
+    const mount = basePivot.getAbsolutePosition().clone();
+    mount.y += 0.05;
+    state.ikTarget.copyFrom(projectCobotTarget(state, idleTarget));
+    basePivot.rotation.y = normalizeAngle(Math.atan2(state.ikTarget.x - mount.x, state.ikTarget.z - mount.z) - baseRotY);
+    solvePose(state, 0, mount, upperArmLen, forearmLen, wristLen + COBOT_HAND_LINK_LENGTH + COBOT_GRIPPER_TIP_OFFSET);
+    state.desiredTarget.copyFrom(state.ikTarget);
+    state.lastSafeIkTarget.copyFrom(state.ikTarget);
+    gripperTip.computeWorldMatrix(true);
+    state.lastProbePos.copyFrom(gripperTip.getAbsolutePosition());
+    state.lastJointAngles = [basePivot.rotation.y, shoulder.rotation.x, elbow.rotation.x, wrist.rotation.x];
     return { node: root, state };
 }

@@ -309,6 +309,7 @@ export function createPile(item: PlacedItem, scene: Scene, isGhost = false): Tra
 export function createTable(item: PlacedItem, scene: Scene, isGhost = false): TransformNode {
     const root = new TransformNode(`table_${item.id}`, scene);
     root.position = new Vector3(...item.position);
+    root.rotation.y = ROTATION_MAP[item.rotation];
 
     const tableWidth = item.config?.tableSize?.[0] || 1.8;
     const tableDepth = item.config?.tableSize?.[1] || 1.8;

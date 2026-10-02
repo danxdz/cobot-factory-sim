@@ -1,55 +1,102 @@
-# Cobot simulation audit
+﻿# Cobot simulation audit
 
 ## Result
 
-The simulation has reproducible control bugs, not just difficult geometry. The roughly 4,500-line cobot controller lets acquisition, phase logic, goal caching, path planning, collision response, and inverse kinematics independently modify the same target. Their rules can disagree.
+The second audit reproduced a default-layout drop deadlock that the earlier controlled layouts missed. This report replaces the previous audit; previously fixed issues are not listed as open findings.
 
-The supplied `cobot_log.json` records entry into `pick_descend` at simulation time 25.578 and still shows that phase at 55.066, with zero commanded velocity and no successful grab or drop. It contains no full layout or part history, so it cannot reproduce the exact original scene. The tests use controlled layouts instead.
+The browser test ran the actual React/Babylon scene with conveyor physics and both default cobots. Before the reach fix, both robots held a part in `transit_drop` after 43 simulated seconds. After the fix, both completed a drop by 14.2 simulated seconds in the observed run. Spawn timing and part selection are randomized, so this is a reproduction result rather than a throughput guarantee.
 
-Existing local edits in the controller and both lockfiles were preserved. No packages were installed.
+## Confirmed and fixed in this pass
 
-## Fixed
-
-1. **Selected stationary parts were not the actual aim point.** Acquisition accepted table parts up to 1.5 units from the taught point, but hover/descent clamped their position to a much smaller radius and biased it back toward the taught point. A medium disc at X=0.8 produced a commanded X=0.506 and repeatedly failed pickup. Stationary approaches now use the selected part's position. Conveyor tracking retains its capture window.
-2. **Pickup deadlines could fail to expire.** General stall logic subtracted time while pickup logic added it. In addition, unsuccessful near-contact latch branches could bypass timeout branches every frame. Pickup elapsed time is now preserved and failed latches still evaluate their deadline. Acquisition resets its wait timer.
-3. **Lift and drop transitions used the previous waypoint.** `finalReached` was computed before each phase assigned its goal, after the preceding frame had replaced that goal with a waypoint. Tests observed transition to drop descent well away from the destination. Lift, transit, and hover now check the actual tool against their current goal; pickup clearance happens before horizontal transfer.
-4. **Cached goals prevented final approach.** A second goal lock could preserve the preceding phase's endpoint. Hover also ignored changed goals or changes smaller than its acceptance requirements. The redundant goal lock no longer overrides phase goals, and precise approach replanning uses a smaller threshold. Travel height no longer continually adds 0.08 to the current height.
-5. **Base yaw disagreed with the other joints.** Base yaw used a future waypoint while shoulder/elbow IK used the current Cartesian target. The actual tool could swing away from the planned path. All three now solve against the current target, with the existing yaw speed limit retained.
-6. **Pause orphaned a pickup.** A paused tick reset the phase to idle while retaining a targeted part and advancing simulation time. Pausing now preserves the phase, reservation, and deadlines. Manual jog and tuning remain available.
-7. **Some reset paths lost part reservations.** Unlock and manual-control setup cleared the target reference without freeing its `targeted` state. These paths now release that reservation. A cleared safety stop now returns to idle instead of leaving the controller in an unhandled recovery phase. Normal programmed drops also remember the released item for exit-contact handling.
-8. **Runtime names and controller types were broken.** Fixed undefined `st` in collision-disable handling, undefined platform half-width/depth in teaching overlays, an invalid log type import, missing log fields, a duplicate object property, nullable part geometry, and the path-line mesh type.
-
-## Remaining findings
-
-These are code-review findings; they are not covered by the passing manipulation tests.
-
-| Priority | Finding | Evidence / consequence |
+| Priority | Defect | Change and evidence |
 | --- | --- | --- |
-| High | Generated auto-organize programs are overwritten by store synchronization | `frontend/components/BabylonScene.tsx:1372` assigns the configured program on every frame, even when the controller has generated a temporary auto program. The same assignment exists in layout synchronization. Empty configured programs can erase autonomous work. |
-| High | Safety recovery commands no actual movement | `frontend/babylon/cobotMesh.ts:2519` assigns a recovery target but returns before motion integration and IK. It can clear when the obstruction disappears; it cannot execute its advertised retreat while the obstruction remains. Also, `lastSafeIkTarget` is updated even after collision detection. |
-| High | Deleting a cobot can orphan its part | `frontend/components/BabylonScene.tsx:395` removes the runtime state without releasing its targeted or grabbed item. That item may remain unavailable or suspended. |
-| High | Drop destinations have no reservation shared by robots | Pickup uses the part's `targeted` state, but drop selection uses current occupancy and local locks. Two carrying robots can choose the same empty location before either releases. Needs a two-robot integration test and explicit destination ownership. |
-| Medium | Collision and reach models remain inconsistent | Multiple collision layers separately change targets. Clearance uses conservative link bounds, and the reach envelope differs from the wrist-offset IK calculation. Complex layouts and restricted joint limits need further validation; successful simple layouts do not establish arbitrary reachability. |
-| Medium | Torque display never reads runtime state | `frontend/components/UI.tsx:1035` reads `simState.cobotStates`, which does not exist. Its guard silently prevents updates. |
-| Medium | Motion tracking and logs need lifecycle work | The module-level `itemMotionTracker` is never pruned/reset and is timed using individual cobot clocks. Every moving tick also appends a trace into a 600-entry log, quickly evicting useful earlier events. |
-| Medium | Type checking is not part of the build | The production build passes while an explicit TypeScript check still reports 20 diagnostics in scene/UI/entity/store/entrypoint code. These include invalid Babylon properties, the missing torque state, and an effect cleanup returning a boolean. |
-| Low | Large initial asset bundle | The build reports a Babylon chunk of about 6.55 MB before gzip (1.44 MB gzip). Loading/rendering performance needs a separate browser profile. |
+| High | Default-layout transfer waits for an unreachable high travel pose | Motion projected the point into reach while phase completion compared against the original point. Transit now completes at the projected staging pose, then approaches the lower destination. Reproduced in the browser and covered for both default robots and all four part shapes. |
+| High | Sorted drop selection chooses unreachable slots | Candidate slots must have a reachable hover approach. Receivers prefer the center, then try points within their existing capture radius when the center approach is unreachable. Exact unsorted taught positions are preserved. |
+| High | Pick jumps past taught move/wait steps | Carry execution now follows the program sequence and keeps the gripper closed while holding a part. Regression checks that the waypoint is reached and the entire wait runs. |
+| High | Receivers away from the 2.5-unit grid fail to score | Scene physics now chooses the support by its actual footprint and height. Real-browser tests verify both receiver types at X=2.2. Both receiver types also respect configured color and size filters. |
+| Medium | Controller and physics disagree on support heights | Both now use the same world-height calculation. This includes elevated modules and the pile floor's 0.02 thickness; pile-wall and receiver-spindle clearance also follows configured height. Mesh-bound tests verify the surfaces. |
+| Medium | Rectangular table rotation changes physics but not the mesh | Tables now apply the configured rotation. Test verifies visual bounds and support footprint agree. |
+| Medium | Path visualization updates a fixed two-vertex buffer with variable-length routes | The overlay recreates its buffers only when waypoint count changes and skips updates when hidden. It is disposed on robot deletion/rebuild. Covered by a lifecycle test and real WebGL execution. |
+| Medium | Collision frames overwrite the last safe recovery pose | The pose is retained when an obstacle/part collision or safety stop is detected. Existing recovery tests still pass. |
+| Medium | Restart retains sensor/preview timing from the previous run | Reset now clears sensor slowdown and preview/log clocks along with scene release-history maps. |
+| Medium | Runtime changes serialize and write the layout repeatedly | localStorage writes now happen only when persisted layout/preferences change. Store regression verifies telemetry/selection updates do not write, while configuration changes do. |
+| Low | Obsolete transformation scripts and Vite configuration warning | Removed six one-off refactor scripts. Updated the Vite path alias to use import.meta.dirname. |
+
+Earlier fixes remain covered: acquisition timeouts, stationary offset pickup, pause/resume, generated auto-organize programs, reservation ownership, occupied-drop waiting, restart registration, collision recovery, and the loaded-gripper clearance mismatch. The four controlled shape cycles still complete in roughly 5.7-6.1 simulated seconds with collision checks enabled.
 
 ## Validation
 
-From `frontend`, using Node 24.19:
+Run from `frontend`:
 
-```sh
-npm test
-npm run build
-node node_modules/typescript/bin/tsc --noEmit --jsx react-jsx --module esnext --moduleResolution bundler --target es2022 --allowSyntheticDefaultImports --skipLibCheck index.tsx
+```powershell
+npm.cmd test
+npm.cmd run build
+npm.cmd audit
 ```
 
-- Nine headless Babylon regression tests pass: offset disc/can/box/pyramid pickup and exact placement with collision checks enabled; correct destination alignment before descent; pause/resume; advancing pickup deadlines; stale-contact timeouts in descent and attach; and a slowly moving conveyor part.
-- Production build passes, with the bundle-size warning above.
-- The explicit TypeScript check still fails on the remaining diagnostics above. It now reports no diagnostics in the cobot controller or its supporting modules.
-- Tests exercise real meshes, world transforms, and controller ticks through Babylon's `NullEngine`. Conveyor movement is supplied by the test. They do not execute the React render loop, full scene physics, camera rendering, multiple robots, or the user's persisted browser layout. Some collision-enabled test cycles take tens of simulated seconds; these tests establish completion, not optimized throughput.
+- 40 automated tests passed with Babylon NullEngine and real mesh transforms. Includes controller updates at 8, 15, 30, and 60 Hz, elevated bins, default-layout rear transfers, and taught program sequencing.
+- TypeScript check and production build passed. Vite still warns about the large Babylon bundle (about 6.44 MB raw / 1.41 MB gzip).
+- npm audit reported zero known vulnerabilities.
+- Isolated headless Chrome passed four controlled start/stop pick/drop cycles, WebGL/path rendering, off-grid receiver scoring, then a full default-layout run with both robots completing drops. No browser runtime/console errors were captured. The script uses a separate temporary browser profile and does not read or overwrite the user's saved layout.
 
-## Complexity reduction
+To reproduce the browser integration check, start a dedicated dev server in one terminal:
 
-Keep one owner for each decision: a part/destination reservation service, a phase state machine that outputs a semantic goal, a planner that outputs waypoints, and an IK/motion layer that executes them. Collision handling should return an explicit blocked/replan result rather than silently rewriting a phase's goal. Replace string phases and independent nullable fields with a discriminated state type. Extract these responsibilities incrementally behind the regression tests; a wholesale rewrite would obscure the verified fixes.
+```powershell
+npm.cmd run dev -- --host 127.0.0.1 --port 5188 --strictPort
+```
+
+Then, in another terminal in `frontend`:
+
+```powershell
+node tests/browser-smoke.mjs
+```
+
+The script defaults to the standard Windows Chrome installation. Set `CHROME_PATH` for a different Chromium executable. It uses debugging port 9229; keep that port free.
+
+## Remaining findings and limits
+
+1. **Long-run performance:** dead parts are compacted with their index-keyed velocity maps, but several physics/vision loops still scan live parts or compare pairs. Large live-part populations and pooled meshes still need sustained performance testing.
+2. **Arbitrary/custom reachability:** automatic destination selection checks the two-link reach envelope, not a complete joint-limit/collision-free reachability search. Extreme joint settings or an explicitly taught unreachable exact drop can still fail to complete. No global deadlock-free guarantee exists for crowded multi-robot layouts.
+3. **Large time steps:** low-frequency controller ticks were tested, but the scene still uses variable time steps. A long background-tab pause or 10x speed on a slow device needs dedicated full-scene testing/substepping.
+4. **Persistence validation:** parsed saved layouts do not have comprehensive schema validation. Malformed manually edited storage/imported configuration remains a potential failure source.
+5. **Coverage:** the actual saved layout in the user's normal browser profile has not been loaded. Browser validation covers a fresh default layout and explicit fixtures. Receiver filters were inspected and corrected, but every filter combination and custom part geometry has not been exercised in-browser.
+
+These are open findings, not claims that every layout is correct. The default-layout transit deadlock and the other defects listed above have concrete fixes and verification.
+
+## Motion-smoothing follow-up
+
+The motion layer now integrates velocity once, after proximity/yield constraints. An analytic velocity response replaces the separate frame-dependent blend/damping paths, including the accidental double blend near taught move endpoints. Tool displacement is integrated over the frame rather than approximated using only the final velocity. Endpoint clamping checks motion along the target direction, so sideways momentum cannot trigger a snap to the waypoint.
+
+Wrist roll and tool-orientation blending use a bounded exponential response. Slow frames no longer multiply wrist-angle error by a factor greater than one and overshoot the commanded angle.
+
+Validation: 43 automated tests and the production build pass. New tests compare velocity and displacement at 8, 15, 30, 60, and 144 Hz for the same command, check smooth direction reversal, and verify slow-frame wrist convergence. The full four-shape pick/drop fixtures complete in 5.75-6.53 simulated seconds. This makes the motion response frame-rate independent; the complete scene physics and collision decisions still use variable time steps, as noted above.
+
+The next architectural simplification would separate scene simulation from rendering, enabling fixed-step physics with render interpolation. Collision-aware corner blending can follow; contact waypoints should remain exact.
+
+The smoothing follow-up also passed the real-browser smoke test: four controlled restart/pick/drop cycles, receiver scoring, and both default cobots completing drops by 14.3 simulated seconds, with no captured browser errors.
+
+## First Shift game layer
+
+Added a separate, temporary challenge mode with a 180-second simulation clock, a 5,500-credit equipment budget, a repeatable 24-part feed, destination-specific orders, and medal/results feedback. Store guards lock the feed/receivers and prevent free credits or unsupported purchases. Retry preserves the edited equipment; reset restores the starter kit. Exiting restores the Sandbox snapshot, and challenge changes never persist over the Sandbox save.
+
+The first browser run exposed missed pickups in the starter configuration and a reject outlet that accumulated parts at its entrance. The challenge now uses faster robots, slower pickup belts, and an entrance capture rule for its reject outlet. Sandbox receiver behavior is unchanged.
+
+Validation: all 48 automated tests and the production build pass. Isolated Chrome runs completed the starter order in approximately 56.5 simulated seconds at 3x speed. The browser check also covers pause/resume, retry, actual reject intake, timeout, Sandbox storage restoration, and modal keyboard isolation. Desktop briefing, planning, results, and a 390px mobile briefing were visually inspected. No browser runtime/console errors were captured. Run `node tests/browser-smoke.mjs --challenge` with Vite on port 5188 to reproduce.
+
+This is one introductory challenge, with no persistent medals or campaign progression yet. The incoming sequence is repeatable; full physics outcomes still depend on variable frame timing. The existing Babylon bundle-size warning remains.
+
+## Path and perception audit
+
+The cobots read live `simState.items` positions, colors, sizes, ownership, and stack coverage. Pickup candidates are filtered around the taught pickup point and by reach, then ranked by distance, crowding, and camera confidence/offset. Linking a camera biases those rankings; it does not require a detection before pickup. Obstacle geometry comes from placed machine footprints/heights, part geometry, and neighboring robot samples, not camera pixels. The wrist's four directional sensor indicators summarize nearby simulated geometry.
+
+Each program phase chooses a Cartesian tool target. The planner adds clearance/lift waypoints and obstacle detours; motion applies speed, proximity, and recovery constraints; two-link inverse kinematics converts the tool target into base, shoulder, elbow, and wrist angles. Final pickup/drop phases command contact targets directly. The planner remains a geometric heuristic with runtime collision checks, not a complete joint-space path search.
+
+Reproduced and corrected:
+
+- **Initial pose mismatch:** a fresh default arm was drawn with zero joint angles at tip Y=5.715 while its controller target was Y=2.2. Its first tick moved the visible tool about 3.6 scene units. Creation now solves the home pose before displaying the robot; a regression bounds first-frame displacement.
+- **Base-axis crossing:** front-to-back paths could pass directly through the yaw axis, where the target angle flips by approximately 180 degrees. Transport now uses tangent/arc waypoints around that axis, including loaded transport. Exact contact targets remain intact.
+- **Repeated pickup replanning:** small moving-target drift restarted the approach. Clear, small endpoint updates now retain completed waypoints; larger displacement or obstruction still triggers planning. Removed unnecessary elevated midpoints on clear routes.
+- **Double velocity prediction:** interception added nominal belt travel and measured part travel together, then blended toward potentially old camera coordinates. It now uses one planar velocity estimate, with the same 0.92 belt speed factor as scene physics and time-based velocity filtering. Camera rankings remain available.
+- **Misleading path display:** the bright trajectory showed an entire forecast loop, including old/current points. It now shows only the remaining active route. The separate future-program preview is faint, and its line buffers resize when waypoint count changes. Preview planning no longer mutates the controller's avoidance side.
+
+Validation: 53 automated tests, TypeScript, and production build pass. Before the final initialization correction, isolated Chrome passed four pickup/drop restart cycles, both receiver types, and both default robots. The final version passed the full First Shift browser test in 55.24 simulated seconds with 8 red and 4 blue deliveries and zero rejects, plus pause/retry/timeout and Sandbox restoration. No captured browser errors. Custom saved layouts, arbitrary obstacles, and all joint-limit combinations remain outside that browser coverage.

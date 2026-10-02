@@ -84,13 +84,43 @@ export function detourAroundObstacle(
         return { points, score: distance + collisionPenalty + bendPenalty };
     });
     candidates.sort((a, b) => a.score - b.score);
-    const best = candidates[0].points;
-    if (best.length > 0) {
-        const first = best[0];
-        const cross = (goal.x - start.x) * (first.z - start.z) - (goal.z - start.z) * (first.x - start.x);
-        state.avoidanceSide = cross >= 0 ? 1 : -1;
+    return candidates[0].points.map(p => p.clone());
+}
+
+// Crossing the yaw axis changes atan2 by almost 180 degrees in one frame.
+// Route transport around it; exact contact targets remain owned by the phase.
+export function avoidBaseAxis(state: CobotState, path: Vector3[], mount: Vector3): Vector3[] {
+    const radius = Math.max(0.5, state.mountCollisionRadius + 0.12);
+    const result: Vector3[] = [path[0]];
+    for (let i = 1; i < path.length; i++) {
+        const start = result[result.length - 1], goal = path[i];
+        const r0 = Math.hypot(start.x - mount.x, start.z - mount.z);
+        const r1 = Math.hypot(goal.x - mount.x, goal.z - mount.z);
+        if (r0 <= radius || r1 <= radius || pointSegmentDistSq2D(mount.x, mount.z, start.x, start.z, goal.x, goal.z) >= radius * radius) {
+            result.push(goal);
+            continue;
+        }
+        const a0 = Math.atan2(start.z - mount.z, start.x - mount.x);
+        const a1 = Math.atan2(goal.z - mount.z, goal.x - mount.x);
+        const candidates = [1, -1].map(sign => {
+            const entry = a0 + sign * Math.acos(radius / r0);
+            const exit = a1 - sign * Math.acos(radius / r1);
+            const sweep = ((sign * (exit - entry)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+            const count = Math.max(1, Math.ceil(sweep / (Math.PI / 8)));
+            const points: Vector3[] = [];
+            for (let j = 0; j <= count; j++) {
+                const angle = entry + sign * sweep * j / count;
+                points.push(new Vector3(mount.x + radius * Math.cos(angle), Math.max(start.y, goal.y), mount.z + radius * Math.sin(angle)));
+            }
+            const full = [start, ...points, goal];
+            const distance = full.slice(1).reduce((sum, p, n) => sum + Vector3.Distance(full[n], p), 0);
+            const blocked = full.slice(1).some((p, n) => findBlockingPathObstacle(state, full[n], p, Math.min(full[n].y, p.y), !!state.grabbedItem));
+            return { points, score: distance + (blocked ? 100 : 0) };
+        });
+        candidates.sort((a, b) => a.score - b.score);
+        result.push(...candidates[0].points, goal);
     }
-    return best.map(p => p.clone());
+    return result;
 }
 
 export function pushPointOutsideBaseKeepout(point: Vector3, mountPos: Vector3, keepout: number): Vector3 {
@@ -144,7 +174,7 @@ export function planToolpath(state: CobotState, start: Vector3, goal: Vector3, m
         if (Math.abs(goal.y - clearY) > 0.05) {
             staged.push(goal.clone());
         }
-        return staged.filter((p, index, arr) => index === 0 || Vector3.Distance(p, arr[index - 1]) > 0.035);
+        return avoidBaseAxis(state, staged.filter((p, index, arr) => index === 0 || Vector3.Distance(p, arr[index - 1]) > 0.035), mountPos);
     }
 
     const path: Vector3[] = [start.clone()];
@@ -168,28 +198,11 @@ export function planToolpath(state: CobotState, start: Vector3, goal: Vector3, m
     const navStart = pushPointOutsideBaseKeepout(navStartRaw, mountPos, pathKeepout);
     const navGoal = pushPointOutsideBaseKeepout(navGoalRaw, mountPos, pathKeepout);
     if (Vector3.Distance(navStart, navStartRaw) > 0.01) path.push(navStart.clone());
-    const dSegBaseSq = pointSegmentDistSq2D(mountPos.x, mountPos.z, navStart.x, navStart.z, navGoal.x, navGoal.z);
-    // Manipulation phases (pick/drop) should skip the base keepout check to allow reaching the backdeck or low belt items directly.
-    const crossesBase = !isManipulation && dSegBaseSq < pathKeepout * pathKeepout;
-
-    if (crossesBase) {
-        const mid = Vector3.Lerp(navStart, navGoal, 0.5);
-        // Instead of a wide horizontal sweep, just lift the end-effector high enough
-        // to safely pass directly over the robot's own pedestal.
-        // The base yaw will naturally handle the rotation in the shortest path.
-        mid.y = Math.max(clearY, mountPos.y + 0.85);
-        path.push(mid);
-    }
-
     const obstacleSegmentStart = path[path.length - 1] ?? navStart;
     const blockingObstacle = findBlockingPathObstacle(state, obstacleSegmentStart, navGoal, clearY, isManipulation);
     if (blockingObstacle) {
         const detour = detourAroundObstacle(state, obstacleSegmentStart, navGoal, blockingObstacle, clearY, mountPos, isManipulation);
         detour.forEach(p => path.push(p));
-    } else if (!crossesBase && Math.sqrt((navGoal.x - navStart.x) ** 2 + (navGoal.z - navStart.z) ** 2) > 1.1) {
-        const mid = Vector3.Lerp(navStart, navGoal, 0.5);
-        mid.y = clearY + (isManipulation ? 0.02 : 0.08);
-        path.push(mid);
     }
 
     if (Vector3.Distance(navGoal, navGoalRaw) > 0.01) {
@@ -207,7 +220,7 @@ export function planToolpath(state: CobotState, start: Vector3, goal: Vector3, m
             compact.push(p);
         }
     }
-    return compact;
+    return avoidBaseAxis(state, compact, mountPos);
 }
 
 export function nextPlannedTarget(state: CobotState, mountPos: Vector3, goal: Vector3, precisePhase: boolean): Vector3 {
@@ -217,7 +230,13 @@ export function nextPlannedTarget(state: CobotState, mountPos: Vector3, goal: Ve
         state.phase === 'pick_recenter' ||
         state.phase === 'descend_drop' ||
         state.phase === 'release';
-    if (directContactPhase) return goal.clone();
+    if (directContactPhase) {
+        state.plannedPath = [state.ikTarget.clone(), goal.clone()];
+        state.plannedPathCursor = 1;
+        state.plannedPathGoal.copyFrom(goal);
+        state.plannedPathPhase = state.phase;
+        return goal.clone();
+    }
 
     const isExitPhase = state.phase === 'drop_recenter' || state.phase === 'lift' || state.phase === 'pick_recenter';
     const movingPickPhase = state.phase === 'pick_hover';
@@ -226,6 +245,19 @@ export function nextPlannedTarget(state: CobotState, mountPos: Vector3, goal: Ve
     const phaseChanged = state.plannedPathPhase !== state.phase;
     const noPath = state.plannedPath.length < 2;
     const cursorDone = state.plannedPathCursor >= state.plannedPath.length;
+    // Track a moving intercept without restarting the completed approach. A
+    // larger displacement or a newly blocked segment still requires planning.
+    if (movingPickPhase && !phaseChanged && !noPath && !cursorDone &&
+        Vector3.Distance(state.plannedPathGoal, goal) <= 0.3) {
+        const from = state.plannedPathCursor === state.plannedPath.length - 1
+            ? state.ikTarget : state.plannedPath[state.plannedPath.length - 2];
+        const axisSafe = pointSegmentDistSq2D(mountPos.x, mountPos.z, from.x, from.z, goal.x, goal.z) >= 0.16;
+        if (axisSafe && !findBlockingPathObstacle(state, from, goal, Math.min(from.y, goal.y), false)) {
+            state.plannedPath[state.plannedPath.length - 1].copyFrom(goal);
+            const waypoint = state.plannedPath[state.plannedPathCursor];
+            if (state.plannedPathCursor === state.plannedPath.length - 1 || Vector3.Distance(state.ikTarget, waypoint) >= 0.16) return waypoint;
+        }
+    }
     
     // For exit/recenter phases, we want immediate response to goal changes (blended transit)
     const forceImmediateReplan = isExitPhase && goalChanged;

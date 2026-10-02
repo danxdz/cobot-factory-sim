@@ -7,13 +7,14 @@ import { driveTileAt,driveVector,supportTopAt } from './geometry';
 import { clamp } from './math';
 import { partHalfHeight,partRadiusForSpec } from './partGeometry';
 import type { CobotState } from './stateTypes';
+import { responseBlend } from './motionProfile';
 
 
 export function predictedPickupPos(item: SimItem, obstacles: PlacedItem[], leadTime = PICK_LEAD_TIME): Vector3 {
     const predicted = item.pos.clone();
     const driveTile = driveTileAt(item.pos.x, item.pos.z, obstacles);
     if (!driveTile) return predicted;
-    const speed = (driveTile.config?.speed || 2) * 0.55;
+    const speed = (driveTile.config?.speed || 2) * 0.92;
     return predicted.addInPlace(driveVector(driveTile.rotation).scale(speed * leadTime));
 }
 
@@ -22,13 +23,15 @@ export function estimateItemVelocity(state: CobotState, item: SimItem): Vector3 
     const now = state.simTime;
     const tracked = itemMotionTracker.get(item);
     if (!tracked) {
-        itemMotionTracker.set(item, { pos: item.pos.clone(), t: now, vel: Vector3.Zero() });
-        return Vector3.Zero();
+        const drive = driveTileAt(item.pos.x, item.pos.z, state.obstacles);
+        const initialVelocity = drive ? driveVector(drive.rotation).scale((drive.config?.speed || 2) * 0.92) : Vector3.Zero();
+        itemMotionTracker.set(item, { pos: item.pos.clone(), t: now, vel: initialVelocity });
+        return initialVelocity.clone();
     }
     const dt = now - tracked.t;
     if (dt > 0.0001) {
         const rawVel = item.pos.subtract(tracked.pos).scale(1 / dt);
-        const nextVel = Vector3.Lerp(tracked.vel, rawVel, 0.42);
+        const nextVel = Vector3.Lerp(tracked.vel, rawVel, responseBlend(24, dt));
         tracked.vel.copyFrom(nextVel);
         tracked.pos.copyFrom(item.pos);
         tracked.t = now;
@@ -38,7 +41,7 @@ export function estimateItemVelocity(state: CobotState, item: SimItem): Vector3 
 
 export function pickupLeadTime(state: CobotState, item: SimItem, baseLead = PICK_LEAD_TIME): number {
     const driveTile = driveTileAt(item.pos.x, item.pos.z, state.obstacles);
-    const beltSpeed = driveTile ? (driveTile.config?.speed || 2) * 0.55 : 0;
+    const beltSpeed = driveTile ? (driveTile.config?.speed || 2) * 0.92 : 0;
     state.gripperTip.computeWorldMatrix(true);
     const tip = state.gripperTip.getAbsolutePosition();
     const planarDist = Math.sqrt((tip.x - item.pos.x) ** 2 + (tip.z - item.pos.z) ** 2);
@@ -70,15 +73,12 @@ export function bestDetectionForItem(state: CobotState, item: SimItem) {
 
 export function pickupAimPoint(state: CobotState, item: SimItem, leadTime = PICK_LEAD_TIME): Vector3 {
     const lead = pickupLeadTime(state, item, leadTime);
-    const predicted = predictedPickupPos(item, state.obstacles, lead);
+    const hasMotionSample = state.itemMotionTracker.has(item);
     const motionVel = estimateItemVelocity(state, item);
-    const motionGain = driveTileAt(item.pos.x, item.pos.z, state.obstacles) ? 0.92 : 0.54;
-    predicted.addInPlace(motionVel.scale(lead * motionGain));
-    const detection = bestDetectionForItem(state, item);
-    if (!detection) return predicted;
-    const movingOnDrive = !!driveTileAt(item.pos.x, item.pos.z, state.obstacles);
-    const detectionWeight = movingOnDrive ? 0.18 : 0.36;
-    return Vector3.Lerp(predicted, detection.pos, detectionWeight);
+    // Live world coordinates own the intercept. Vision still ranks candidates,
+    // but an older camera sample must not pull a moving target backward.
+    if (!hasMotionSample) return predictedPickupPos(item, state.obstacles, lead);
+    return new Vector3(item.pos.x + motionVel.x * lead, item.pos.y, item.pos.z + motionVel.z * lead);
 }
 
 export function pickupContactTipY(targetTop: number, supportTop: number): number {
@@ -189,7 +189,7 @@ export function pickupCandidateStepDistance(state: CobotState, candidate: SimIte
     const driveTile = driveTileAt(candidate.pos.x, candidate.pos.z, state.obstacles);
     if (!driveTile) return currentDist;
 
-    const speed = (driveTile.config?.speed || 2) * 0.55;
+    const speed = (driveTile.config?.speed || 2) * 0.92;
     const dir = driveVector(driveTile.rotation);
     let best = currentDist;
     for (let t = 0.2; t <= 1.8; t += 0.2) {

@@ -1,4 +1,6 @@
-import { Color3,MeshBuilder,Vector3 } from '@babylonjs/core';
+import { Color3,Vector3 } from '@babylonjs/core';
+import { updateCobotPath } from './pathVisuals';
+import { integrateToolVelocity } from './motionProfile';
 import { simState } from '../../simState';
 import { factoryStore } from '../../store';
 import { PlacedItem } from '../../types';
@@ -297,7 +299,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
     const cruiseSpeed = (state.recoveryTimer > 0 ? 0.8 : (isSlowPhase ? 1.4 : 5.8)) * state.speed;
     const settleRadius = precisePhase ? 0.2 : 0.5;
     const accel = (precisePhase ? 8.0 : 5.5) * state.speed;
-    const damping = Math.min(1, (precisePhase ? 14.5 : 8.5) * delta);
+    const drag = (precisePhase ? 14.5 : 8.5) * (relaxedContactMotion ? 0.2 : 0.35);
 
     let desiredVelocity = Vector3.Zero();
     if (distanceToTarget > 0.0001) {
@@ -311,19 +313,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
     // the future waypoint's yaw creates a feedback loop: movement must happen
     // before yaw can change. Proximity and collision checks below govern speed.
     {
-        if (relaxedContactMotion) {
-            const velocityBlend = Math.min(1, accel * delta);
-            state.ikVelocity = Vector3.Lerp(state.ikVelocity, desiredVelocity, velocityBlend);
-            state.ikVelocity.scaleInPlace(1 - damping * 0.2);
-            const step = state.ikVelocity.scale(delta);
-            if (step.length() >= distanceToTarget) {
-                state.ikTarget.copyFrom(state.desiredTarget);
-                state.ikVelocity.setAll(0);
-            } else {
-                state.ikTarget.addInPlace(step);
-            }
-            clampTargetAboveSupports(state, state.ikTarget, state.phase, !!state.grabbedItem);
-        } else if (!precisionMoveApproach) {
+        if (!relaxedContactMotion && !precisionMoveApproach) {
             const avoidanceGain = precisePhase ? 0.45 : 1.0;
             const planar = new Vector3(desiredVelocity.x, 0, desiredVelocity.z);
             const forwardComp = Vector3.Dot(planar, sensorForward);
@@ -342,9 +332,6 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
 	    {
 	        if (!relaxedContactMotion) {
 	            if (precisionMoveApproach) {
-                const velocityBlend = Math.min(1, accel * delta);
-                state.ikVelocity = Vector3.Lerp(state.ikVelocity, desiredVelocity, velocityBlend);
-                state.ikVelocity.scaleInPlace(1 - damping * 0.25);
                 state.safetySpeedFactor += (1 - state.safetySpeedFactor) * clamp(delta * 8.5, 0, 1);
                 state.reducedSpeedActive = false;
                 state.avoidanceSide = 0;
@@ -422,13 +409,11 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
         }
     }
 
-	    if (!relaxedContactMotion) {
-	        const velocityBlend = Math.min(1, accel * delta);
-        state.ikVelocity = Vector3.Lerp(state.ikVelocity, desiredVelocity, velocityBlend);
-        state.ikVelocity.scaleInPlace(1 - damping * 0.35);
-
-        const step = state.ikVelocity.scale(delta);
-        if (step.length() >= distanceToTarget) {
+    {
+        const step = integrateToolVelocity(state.ikVelocity, desiredVelocity, delta, accel, drag);
+        // Only clamp a step that reaches the target along the intended direction.
+        // Sideways momentum must not teleport the tool to a nearby waypoint.
+        if (distanceToTarget > 0 && Vector3.Dot(step, toTarget) >= distanceToTarget * distanceToTarget) {
             state.ikTarget.copyFrom(state.desiredTarget);
             state.ikVelocity.setAll(0);
         } else {
@@ -519,7 +504,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
         } else {
             state.partContactTimer = Math.max(0, state.partContactTimer - delta * 2.2);
         }
-        state.lastSafeIkTarget.copyFrom(state.ikTarget);
+        if (!hit && !partHit && !state.safetyStopped) state.lastSafeIkTarget.copyFrom(state.ikTarget);
     } else if (isRunning && pickupContactOverride) {
         state.partContactTimer = 0;
         state.blockedTimer = 0;
@@ -710,19 +695,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
     }
 
     // ── Path Visualization Update ──────────────────────────────────────────
-    if (state.pathLine) {
-        state.gripperTip.computeWorldMatrix(true);
-        const toolPosNow = state.gripperTip.getAbsolutePosition();
-        
-        // Use the precalculated preview path for the long-range visualization
-        // and prepend the current gripper position for a smooth connection.
-        const previewPoints = state.precalculatedPath.length > 0 
-            ? [toolPosNow.clone(), ...state.precalculatedPath]
-            : [toolPosNow.clone(), state.desiredTarget.clone()];
-
-        MeshBuilder.CreateLines(state.pathLine.name, { points: previewPoints, instance: state.pathLine });
-        state.pathLine.isVisible = !!state.selfItem?.config?.cobotShowPath; 
-    }
+    updateCobotPath(state);
 
     return false;
 }

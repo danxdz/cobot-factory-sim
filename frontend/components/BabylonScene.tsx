@@ -35,14 +35,14 @@ createSender,
 createTable
 } from '../babylon/entityMeshes';
 import { simState } from '../simState';
+import { FIRST_SHIFT } from '../game/challenge';
+import { machineTopY } from '../babylon/cobot/geometry';
 import { factoryStore } from '../store';
 import { MachineRuntimeState,PartShape,PartSize,PartTemplate,PlacedItem } from '../types';
 
 const ITEM_COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b'];
 const ITEM_SIZES: PartSize[] = ['small', 'medium', 'large'];
 const SIZE_DIAMETER: Record<PartSize, number> = { small: 0.44, medium: 0.5, large: 0.56 };
-const TILE_CENTER_Y = 0.545;
-const TABLE_CENTER_Y = 0.458;
 const COBOT_PLATFORM_TOP_Y = 1.37;
 const COBOT_PLATFORM_W = 1.98;
 const COBOT_PLATFORM_D = 1.98;
@@ -458,6 +458,7 @@ export const BabylonScene: React.FC = () => {
                 } else if (entitySigs.get(item.id) !== sig) {
                     // Position or rotation changed — dispose and rebuild
                     const oldState = cobotStates.get(item.id);
+                    oldState?.pathLine?.dispose(false, true);
                     disposeNode(entityNodes.get(item.id)!);
                     entityNodes.delete(item.id);
                     // Preservation of runtime state is handled inside buildEntityMesh if we pass oldState
@@ -749,13 +750,19 @@ export const BabylonScene: React.FC = () => {
                 const points = previewPath.map(p => p.clone());
                 if (points.length < 2) continue;
                 const elevated = points.map((p, idx) => new Vector3(p.x, p.y + 0.03 + idx * 0.0015, p.z));
-                const existing = toolpathLines.get(id);
+                let existing = toolpathLines.get(id);
+                if (existing && existing.getTotalVertices() !== elevated.length) {
+                    existing.dispose();
+                    existing = undefined;
+                }
                 const line = existing
                     ? MeshBuilder.CreateLines(`toolpath_${id}`, { points: elevated, instance: existing })
                     : MeshBuilder.CreateLines(`toolpath_${id}`, { points: elevated, updatable: true }, scene);
                 line.parent = toolpathRoot;
                 line.color = Color3.FromHexString('#38bdf8');
-                line.alpha = 0.9;
+                // The faint line previews future program steps; the robot's
+                // bright path shows only the remaining live waypoints.
+                line.alpha = 0.25;
                 line.isPickable = false;
                 toolpathLines.set(id, line);
                 visibleIds.add(id);
@@ -1083,6 +1090,7 @@ export const BabylonScene: React.FC = () => {
         window.addEventListener('keydown', handleKey);
         function handleKey(e: KeyboardEvent) {
             const target = e.target as HTMLElement | null;
+            if (e.defaultPrevented || target?.closest('button, [role="dialog"]') || document.querySelector('.game-dialog')) return;
             const typing = !!target && (
                 target.tagName === 'INPUT' ||
                 target.tagName === 'TEXTAREA' ||
@@ -1108,12 +1116,7 @@ export const BabylonScene: React.FC = () => {
         }
 
         function itemSupportTopY(item: PlacedItem): number {
-            if (item.type === 'belt') return item.config?.beltHeight || TILE_CENTER_Y;
-            if (['sender', 'receiver', 'indexed_receiver'].includes(item.type)) return item.config?.machineHeight || TILE_CENTER_Y;
-            if (item.type === 'pile') return item.config?.machineHeight || 0.7;
-            if (item.type === 'table') return item.config?.tableHeight || TABLE_CENTER_Y;
-            if (item.type === 'cobot') return COBOT_PLATFORM_TOP_Y;
-            return 0;
+            return machineTopY(item);
         }
 
         function itemSurfaceCenterY(
@@ -1395,21 +1398,30 @@ export const BabylonScene: React.FC = () => {
                 return;
             }
 
+            if (st.challenge) {
+                const robots = [...cobotStates.values()];
+                st.advanceChallenge(delta, robots.filter(robot => !robot.grabbedItem && !robot.targetedItem).length, robots.length);
+                if (factoryStore.getState().isPaused) return;
+            }
+
             // ── Sender spawn ─────────────────────────────────────────────
             placedItems.forEach(item => {
                 if (item.type !== 'sender') return;
+                const challenge = factoryStore.getState().challenge;
+                if (challenge && (item.id !== 's1' || challenge.elapsed < (challenge.spawned + 1) * FIRST_SHIFT.interval)) return;
                 const last = lastSpawnTime[item.id] ?? 0;
                 const interval = item.config?.speed || 3;
-                if (elapsed - last < interval) return;
+                if (!challenge && elapsed - last < interval) return;
                 lastSpawnTime[item.id] = elapsed;
                 const templates = st.partTemplates?.length ? st.partTemplates : [FALLBACK_PART_TEMPLATE];
                 const senderTemplateId = item.config?.spawnTemplateId || 'any';
                 const templatePool = senderTemplateId === 'any'
                     ? templates
                     : templates.filter(t => t.id === senderTemplateId);
-                const template = templatePool.length > 0
+                const template = challenge ? st.spawnChallengePart() : templatePool.length > 0
                     ? templatePool[Math.floor(Math.random() * templatePool.length)]
                     : templates[Math.floor(Math.random() * templates.length)] || FALLBACK_PART_TEMPLATE;
+                if (!template) return;
 
                 // Color: use template's spawnColors pool if present, else its default color
                 const colorPool = template?.spawnColors?.length ? template.spawnColors : null;
@@ -1428,7 +1440,7 @@ export const BabylonScene: React.FC = () => {
                     templateId: template?.id,
                     shape: template?.shape || 'disc',
                     pos: new Vector3(item.position[0], itemSurfaceCenterY(item) + 0.35, item.position[2]),
-                    rotY: Math.random() * Math.PI * 2,
+                    rotY: challenge ? 0 : Math.random() * Math.PI * 2,
                     state: 'free',
                     color,
                     size,
@@ -1513,11 +1525,14 @@ export const BabylonScene: React.FC = () => {
                     let vy = velY.get(index) ?? 0;
                     const planarVel = velXZ.get(index) ?? Vector3.Zero();
 
-                    const gx = Math.round(simItem.pos.x / 2.5) * 2.5;
-                    const gz = Math.round(simItem.pos.z / 2.5) * 2.5;
-                    const tile = placedItems.find(item =>
-                        Math.abs(item.position[0] - gx) < 0.1 && Math.abs(item.position[2] - gz) < 0.1
-                    );
+                    // Placement supports 0.5-unit snapping and arbitrary module
+                    // sizes. A fixed 2.5-unit lookup misses valid receivers.
+                    const tile = placedItems
+                        .filter(item => itemSupportsPart(item, simItem.pos.x, simItem.pos.z))
+                        .reduce<PlacedItem | undefined>((top, item) =>
+                            !top || itemSupportTopY(item) > itemSupportTopY(top) ? item : top, undefined);
+                    const gx = tile?.position[0] ?? simItem.pos.x;
+                    const gz = tile?.position[2] ?? simItem.pos.z;
                     const simHalf = partHalfHeight(simItem);
                     const simRad = partRadius(simItem);
 
@@ -1668,21 +1683,35 @@ export const BabylonScene: React.FC = () => {
                         const targetY = itemSurfaceCenterY(tile, simItem);
                         const colorOk = !tile.config?.acceptColor || tile.config.acceptColor === 'any'
                             || tile.config.acceptColor === simItem.color;
-                        if (dist < 0.35 && Math.abs(simItem.pos.y - targetY) < 0.1 && colorOk) {
+                        const sizeOk = !tile.config?.acceptSize || tile.config.acceptSize === 'any'
+                            || tile.config.acceptSize === simItem.size;
+                        // The challenge's end outlet is a reject bin: consume parts
+                        // at its entrance instead of letting them pile up at the lip.
+                        const atIntake = dist < 0.35 || (st.challenge && tile.id === 'r2');
+                        if (atIntake && Math.abs(simItem.pos.y - targetY) < 0.1 && colorOk && sizeOk) {
                             simItem.state = 'dead';
+                            st.deliverChallengePart(tile.id, simItem);
                             st.setScore(s => s + 1);
                         }
                     }
                     if (tile?.type === 'indexed_receiver') {
                         const dist = Math.sqrt((simItem.pos.x - gx) ** 2 + (simItem.pos.z - gz) ** 2);
                         const targetY = itemSurfaceCenterY(tile, simItem);
-                        if (dist < 0.3 && Math.abs(simItem.pos.y - targetY) < 0.1) {
+                        const colorOk = !tile.config?.acceptColor || tile.config.acceptColor === 'any'
+                            || tile.config.acceptColor === simItem.color;
+                        const sizeOk = !tile.config?.acceptSize || tile.config.acceptSize === 'any'
+                            || tile.config.acceptSize === simItem.size;
+                        if (dist < 0.3 && Math.abs(simItem.pos.y - targetY) < 0.1 && colorOk && sizeOk) {
                             const norm = ((simItem.rotY % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
                             simItem.state = 'dead';
+                            st.deliverChallengePart(tile.id, simItem);
                             st.setScore(s => s + (norm < 0.3 || norm > Math.PI*2 - 0.3 ? 2 : 1));
                         }
                     }
-                    if (simItem.pos.y < -3 || Math.abs(simItem.pos.x) > 60 || Math.abs(simItem.pos.z) > 60) simItem.state = 'dead';
+                    if (simItem.pos.y < -3 || Math.abs(simItem.pos.x) > 60 || Math.abs(simItem.pos.z) > 60) {
+                        simItem.state = 'dead';
+                        st.deliverChallengePart('lost', simItem);
+                    }
 
                     mesh.position.copyFrom(simItem.pos);
                     mesh.rotation.y = simItem.rotY;
@@ -1821,7 +1850,7 @@ export const BabylonScene: React.FC = () => {
                     const spacingZ = Math.min(0.52, Math.max(0.22, d / Math.max(2, rows)));
                     const startX = item.position[0] - ((cols - 1) * spacingX) / 2;
                     const startZ = item.position[2] - ((rows - 1) * spacingZ) / 2;
-                    const baseY = (item.config?.machineHeight || 0.7) + DEFAULT_PART_HALF + 0.02;
+                    const baseY = machineTopY(item) + DEFAULT_PART_HALF;
                     for (let i = 0; i < count; i++) {
                         const layer = Math.floor(i / slotsPerLayer);
                         const slotIndex = i % slotsPerLayer;
@@ -1849,6 +1878,8 @@ export const BabylonScene: React.FC = () => {
             if (stopped) {
                 for (const state of cobotStates.values()) resetCobotRun(state);
                 simState.reset();
+                lastStateByItemId.clear();
+                justReleasedUntil.clear();
                 Object.keys(lastSpawnTime).forEach(k => delete lastSpawnTime[k]);
             }
         });

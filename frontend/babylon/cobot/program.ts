@@ -247,6 +247,8 @@ export function tickProgram(state: CobotState, delta: number, isRunning: boolean
                 const hoverY = Math.max(stepPos.y + 0.24, state.position[1] + 0.92);
                 state.desiredTarget.set(stepPos.x, hoverY, stepPos.z);
                 state.targetSource = 'program';
+            } else if (step.action === 'wait') {
+                state.desiredTarget.copyFrom(step.pos ? stepPos : state.ikTarget);
             }
         }
 
@@ -355,7 +357,7 @@ export function tickProgram(state: CobotState, delta: number, isRunning: boolean
                     state.desiredTarget.copyFrom(state.yieldTarget);
                     break;
                 }
-                state.gripperOpen = true;
+                state.gripperOpen = !state.grabbedItem;
                 const cooperativeYield = computeYieldTargetFromSensors(state, mountPos);
 	                if (cooperativeYield) {
 	                    state.yieldTarget = cooperativeYield;
@@ -377,8 +379,7 @@ export function tickProgram(state: CobotState, delta: number, isRunning: boolean
                         state.autoDropTarget = getAutoSlot(partHint(state.grabbedItem));
                     }
                     if (hasDrop && nextDropIndex !== null) {
-                        state.stepIndex = nextDropIndex;
-                        state.phase = 'transit_drop';
+                        state.phase = 'next';
                         logCobotEvent(state, 'drop_resume', 'redirect_from_idle_with_grabbed_item');
                         break;
                     }

@@ -4,6 +4,8 @@ import { SimItem,simState } from '../simState';
 import { useFactoryStore } from '../store';
 import { Direction,ITEM_COSTS,ItemConfig,ItemType,PartShape,PartSize,PlacedItem,ProgramAction,ProgramStep } from '../types';
 import { PartPreview3D } from './PartPreview3D';
+import { ChallengePanel } from './ChallengePanel';
+import { challengeBuildAllowed, isChallengeFixture } from '../game/challenge';
 
 const PICK_COLORS = [
     { label: 'Red', value: '#ef4444' },
@@ -984,6 +986,7 @@ export const UI: React.FC = () => {
     });
     const [, setCameraFrameTick] = useState(0);
     const {
+        challenge,
         credits,
         score,
         isRunning,
@@ -1265,6 +1268,7 @@ export const UI: React.FC = () => {
         } else {
             setIsPaused(!isPaused);
         }
+        if (challenge) return;
         const now = Date.now();
         if (now - playClicks.time < 500) {
             const newCount = playClicks.count + 1;
@@ -1331,6 +1335,7 @@ export const UI: React.FC = () => {
     };
 
     const exportFactory = () => {
+        if (challenge) return;
         const s = localStorage.getItem('cobot-factory-sim-v10') || localStorage.getItem('cobot-factory-sim-v9') || localStorage.getItem('cobot-factory-sim-v8');
         if (!s) return;
         const b = new Blob([s], { type: 'application/json' });
@@ -1342,6 +1347,7 @@ export const UI: React.FC = () => {
     };
 
     const importFactory = () => {
+        if (challenge) return;
         const inp = document.createElement('input');
         inp.type = 'file';
         inp.accept = '.json';
@@ -1375,7 +1381,7 @@ export const UI: React.FC = () => {
     const handleSellSelected = () => {
         if (selectedItem) {
             removePlacedItem(selectedItem.id);
-            setCredits(creditsValue + ITEM_COSTS[selectedItem.type]);
+            if (!challenge) setCredits(creditsValue + ITEM_COSTS[selectedItem.type]);
         }
     };
 
@@ -1765,7 +1771,8 @@ export const UI: React.FC = () => {
                         <h1 className="text-2xl sm:text-4xl font-display font-black text-blue-400 tracking-tight drop-shadow-md">
                             COBOT FACTORY
                         </h1>
-                        <p className="hidden sm:block text-gray-400 font-mono text-sm mt-1">Simulation Sandbox</p>
+                        <p className="hidden sm:block text-gray-400 font-mono text-sm mt-1">{challenge ? 'Production Challenge' : 'Simulation Sandbox'}</p>
+                        <ChallengePanel />
                     </div>
                 </div>
 
@@ -2284,7 +2291,7 @@ export const UI: React.FC = () => {
 
                         <div className="flex items-start justify-between gap-3">
                             {/* Specific Configs */}
-                            <div className="flex flex-col gap-1.5 flex-1">
+                            <fieldset disabled={!!challenge && isChallengeFixture(selectedItem.id)} className="flex flex-col gap-1.5 flex-1 min-w-0 disabled:opacity-60">
                                 <div className={`rounded-lg overflow-hidden flex flex-col gap-1.5 ${selectedItem.type === 'cobot' ? 'bg-transparent px-0 pb-0' : 'bg-gray-800/50 border border-gray-700 px-2 pb-2'}`}>
                                     <div className={`flex flex-col gap-1.5 w-full ${selectedItem.type === 'cobot' ? '' : 'pt-2'}`}>
                                         {selectedItem.type === 'sender' && !teachMinimized && (
@@ -2527,7 +2534,7 @@ export const UI: React.FC = () => {
                                                             setCobotOverlay({ showPathPreview: !showPathOverlay });
                                                         }}
                                                         className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${showPathOverlay ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
-                                                        title={showPathOverlay ? 'Hide path overlay' : 'Show path overlay'}
+                                                        title={showPathOverlay ? 'Hide future program preview (faint line)' : 'Show future program preview (faint line)'}
                                                     >
                                                         <Link2 size={9} />
                                                         PATH
@@ -2645,7 +2652,7 @@ export const UI: React.FC = () => {
                                                             updatePlacedItem(selectedItem.id, { config: { ...selectedItem.config, cobotShowPath: !(selectedItem.config?.cobotShowPath !== false) } });
                                                         }}
                                                         className={`inline-flex items-center gap-1 rounded border px-1 py-0.5 text-[8px] font-bold cursor-pointer ${selectedItem.config?.cobotShowPath !== false ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-100' : 'border-gray-700 bg-gray-900/55 text-gray-400'}`}
-                                                        title={selectedItem.config?.cobotShowPath !== false ? 'Hide trajectory path' : 'Show trajectory path'}
+                                                        title={selectedItem.config?.cobotShowPath !== false ? 'Hide active robot route (bright line)' : 'Show active robot route (bright line)'}
                                                     >
                                                         <Activity size={9} />
                                                         PATH
@@ -2970,30 +2977,34 @@ export const UI: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
-                            </div>
+                            </fieldset>
 
                             {/* Global Actions */}
                             <div className="flex flex-col gap-1.5 min-w-[106px]">
                                 <div className="grid grid-cols-3 gap-1.5">
                                     <button
                                         onClick={() => setMoveModeItemId(moveModeItemId === selectedItem.id ? null : selectedItem.id)}
+                                        disabled={!!challenge && isChallengeFixture(selectedItem.id)}
                                         className={`flex items-center justify-center gap-1 px-2 h-8 rounded-md text-[9px] font-bold transition-colors ${moveModeItemId === selectedItem.id ? 'bg-blue-500 text-white shadow-[0_0_15px_rgba(59,130,246,0.4)]' : 'bg-blue-500/20 hover:bg-blue-500/40 text-blue-400'}`}
                                     >
                                         <Move size={13} /> {moveModeItemId === selectedItem.id ? (selectedItem.type === 'cobot' ? 'TUNING...' : 'MOVING...') : (selectedItem.type === 'cobot' ? 'TUNE' : 'MOVE')}
                                     </button>
                                     <button
                                         onClick={handleRotateSelected}
+                                        disabled={!!challenge && isChallengeFixture(selectedItem.id)}
                                         className="flex items-center justify-center gap-1 px-2 h-8 bg-gray-800 hover:bg-gray-700 text-white rounded-md text-[9px] font-bold transition-colors"
                                     >
                                         <RotateCw size={13} /> ROT
                                     </button>
                                     <button
                                         onClick={handleSellSelected}
+                                        disabled={!!challenge && (isChallengeFixture(selectedItem.id) || isRunning)}
                                         className="flex items-center justify-center gap-1 px-2 h-8 bg-red-500/20 hover:bg-red-500/40 text-red-400 rounded-md text-[9px] font-bold transition-colors"
                                     >
                                         <Trash2 size={13} /> SELL
                                     </button>
                                 </div>
+                                {challenge && isChallengeFixture(selectedItem.id) && <p className="text-[10px] text-amber-300 max-w-40">Fixed challenge equipment</p>}
                                 {selectedItem.type === 'cobot' && (
                                     <div className="rounded-lg border border-gray-700 bg-gray-900/50 px-2 py-1.5 flex flex-col gap-1">
                                         <button
@@ -3080,15 +3091,15 @@ export const UI: React.FC = () => {
                                     />
                                     <div className="flex gap-1 relative">
                                         <button onClick={handleResetClick} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 transition-colors" title="Clear Factory"><Trash2 size={12} /></button>
-                                        <button onClick={importFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Import Factory"><Upload size={12} /></button>
-                                        <button onClick={exportFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700" title="Export Factory"><Download size={12} /></button>
+                                        <button disabled={!!challenge} onClick={importFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-30" title="Import Factory (Sandbox)"><Upload size={12} /></button>
+                                        <button disabled={!!challenge} onClick={exportFactory} className="p-1 rounded bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700 disabled:opacity-30" title="Export Factory (Sandbox)"><Download size={12} /></button>
 
                                         {showResetConfirm && (
                                             <div className="absolute bg-gray-950 border border-amber-500/60 rounded-xl shadow-2xl p-3 flex flex-col gap-2 w-64 animate-fade-in" style={{ zIndex: 9999, bottom: 'calc(100% + 12px)', left: '0' }}>
                                                 <p className="text-xs text-amber-200 font-bold">Reset factory to default scene?</p>
                                                 <p className="text-[10px] text-gray-400 leading-tight">All placed machines and credits will be reset to defaults.</p>
                                                 <div className="flex flex-col gap-1.5 mt-1">
-                                                    <button onClick={() => doReset(true)} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold rounded-lg py-2 transition-colors flex items-center justify-center gap-2">
+                                                    <button disabled={!!challenge} onClick={() => doReset(true)} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold rounded-lg py-2 transition-colors flex items-center justify-center gap-2 disabled:hidden">
                                                         <Download size={12} /> EXPORT & RESET
                                                     </button>
                                                     <button onClick={() => doReset(false)} className="w-full bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold rounded-lg py-2 transition-colors">RESET ONLY</button>
@@ -3135,7 +3146,7 @@ export const UI: React.FC = () => {
                                                                 handleBuildClick(type);
                                                                 setActiveGroup(null);
                                                             }}
-                                                            disabled={credits < ITEM_COSTS[type] || isRunning}
+                                                            disabled={credits < ITEM_COSTS[type] || isRunning || (!!challenge && !challengeBuildAllowed(type))}
                                                         />
                                                     ))}
                                                 </div>

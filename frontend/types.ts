@@ -1,3 +1,4 @@
+import type { ChallengeRun } from './game/challenge';
 export type ItemType = 'cobot' | 'belt' | 'sender' | 'receiver' | 'table' | 'camera' | 'pile' | 'indexed_receiver';
 export type PartSize = 'small' | 'medium' | 'large';
 export type PartShape = 'disc' | 'can' | 'box' | 'pyramid';
@@ -146,6 +147,13 @@ export interface MachineRuntimeState {
 }
 
 export interface FactoryState {
+    challenge: ChallengeRun | null;
+    enterChallenge: () => void;
+    exitChallenge: () => void;
+    retryChallenge: () => void;
+    advanceChallenge: (delta: number, idleRobots: number, totalRobots: number) => void;
+    spawnChallengePart: () => PartTemplate | null;
+    deliverChallengePart: (receiverId: string, part: { id: string; templateId?: string; shape: string; color: string }) => void;
     credits: number;
     score: number;
     isRunning: boolean;

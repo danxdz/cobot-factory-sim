@@ -162,5 +162,6 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.recoveryAttempts = Math.max(0, state.recoveryAttempts - delta * 0.25);
     }
 
+    if (state.grabbedItem) state.gripperOpen = false;
     return advanceMotion(state, delta, isRunning, mountPos, L1, L2, L3, collisionsOn);
 }

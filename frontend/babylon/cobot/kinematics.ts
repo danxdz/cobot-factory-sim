@@ -4,6 +4,7 @@ import { COBOT_BASE_MAX_ANGULAR_SPEED,COBOT_PEDESTAL_SAFEZONE_RADIUS,IK_BASE_CLE
 import { normalizeAngle } from './geometry';
 import { clamp } from './math';
 import type { CobotState } from './stateTypes';
+import { responseBlend } from './motionProfile';
 
 export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L1: number, L2: number, L3: number) {
     const shoulderLimits = cobotShoulderLimits(state.selfItem?.config);
@@ -69,7 +70,7 @@ export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L
     const targetToolNormalBlend = toolNormalPhase ? 1.0 : 0.0;
 
     if (state.toolNormalBlend === undefined) state.toolNormalBlend = targetToolNormalBlend;
-    state.toolNormalBlend += (targetToolNormalBlend - state.toolNormalBlend) * Math.min(1, delta * 12 * state.speed);
+    state.toolNormalBlend += (targetToolNormalBlend - state.toolNormalBlend) * responseBlend(12 * state.speed, delta);
 
     const blend = state.toolNormalBlend;
     const wristPitch = clamp(wr * (0.72 + 0.28 * blend), wristLimits.min, wristLimits.max);
@@ -84,7 +85,7 @@ export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L
     let rd = state.wristRollTarget - state.currentWristRoll;
     while (rd < -Math.PI) rd += Math.PI * 2;
     while (rd > Math.PI) rd -= Math.PI * 2;
-    state.currentWristRoll += rd * 12 * state.speed * delta;
+    state.currentWristRoll += rd * responseBlend(12 * state.speed, delta);
     state.wristRoll.rotation.y = state.currentWristRoll;
 
 

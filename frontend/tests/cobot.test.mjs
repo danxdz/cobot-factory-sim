@@ -8,6 +8,8 @@ import { factoryStore } from '../store.ts';
 import { syncCobotConfig, disposeCobotState, resetCobotRun } from '../babylon/cobot/lifecycle.ts';
 import { currentDropTarget } from '../babylon/cobot/dropTargets.ts';
 import { reserveDropTarget, releaseDropReservation } from '../babylon/cobot/reservations.ts';
+import { updateCobotPath } from '../babylon/cobot/pathVisuals.ts';
+const defaultLayout = structuredClone(factoryStore.getState().placedItems);
 
 function setup(t, { offset = 0, shape = 'disc', collisions = true, belt = false } = {}) {
   for (const state of simState.cobotStates.values()) disposeCobotState(state);
@@ -39,8 +41,57 @@ function runUntil(state, predicate, beforeTick = () => {}, seconds = 45) {
     tickCobot(state, 1 / 60, true);
     if (predicate()) return;
   }
-  assert.fail(`Timed out in ${state.phase}: ${JSON.stringify({ik:state.ikTarget.asArray(), tip:state.gripperTip.getAbsolutePosition().asArray(), desired:state.desiredTarget.asArray(), flow:state.lockedFlowGoal.asArray(), path:state.plannedPath.map(p=>p.asArray()),cursor:state.plannedPathCursor})}`);
+  assert.fail(`Timed out in ${state.phase}: ${JSON.stringify({ik:state.ikTarget.asArray(), tip:state.gripperTip.getAbsolutePosition().asArray(), desired:state.desiredTarget.asArray(), drop:state.lockedDropTarget?.asArray(),mount:state.basePivot.getAbsolutePosition().asArray(), flow:state.lockedFlowGoal.asArray(), path:state.plannedPath.map(p=>p.asArray()),cursor:state.plannedPathCursor})}`);
 }
+
+for (const [id, shape] of ['c1', 'c2'].flatMap(id => ['disc', 'can', 'box', 'pyramid'].map(shape => [id, shape]))) {
+  test(`${id} transfers a ${shape} from the front belt to the rear station in the default layout`, t => {
+    for (const existing of simState.cobotStates.values()) disposeCobotState(existing);
+    simState.reset();
+    const engine = new NullEngine();
+    t.after(() => engine.dispose());
+    const scene = new Scene(engine);
+    const layout = structuredClone(defaultLayout);
+    factoryStore.setState({placedItems:layout});
+    const self = layout.find(item => item.id === id);
+    const {state} = createCobot(self,scene);
+    state.obstacles = layout.filter(item => item.id !== id && item.type !== 'camera');
+    state.cameras = [];
+    simState.cobotStates.set(id,state);
+    const pick = self.config.program[0].pos;
+    const part = {id:'default-part',shape,size:'medium',color:'#ef4444',pos:new Vector3(pick[0],1.0125,pick[2]),rotY:0,state:'free'};
+    simState.items.push(part);
+    // Reproduce the browser's state immediately after a successful belt pickup.
+    state.grabbedItem = part;
+    part.state = 'grabbed';
+    state.phase = 'pick_recenter';
+    state.ikTarget.set(pick[0] + 0.4, 1.14, pick[2]);
+    state.desiredTarget.copyFrom(state.ikTarget);
+    runUntil(state,()=>state.lastDroppedItemId===part.id);
+    assert.equal(part.state,'free');
+    assert.ok(part.pos.z > 3.7,'part must reach the rear station');
+  });
+}
+
+test('path overlay resizes for new routes and is disposed with the robot', t => {
+  const { state } = setup(t);
+  state.selfItem.config.cobotShowPath = true;
+  const old = state.pathLine;
+  state.plannedPath = [new Vector3(0, 2, 0), new Vector3(1, 2, 1), new Vector3(2, 2, 0)];
+  state.plannedPathCursor = 0;
+  updateCobotPath(state);
+  assert.equal(state.pathLine.getTotalVertices(), 4);
+  assert.equal(old.isDisposed(), true);
+  const sameSize = state.pathLine;
+  updateCobotPath(state);
+  assert.equal(state.pathLine, sameSize);
+  state.plannedPath = [];
+  updateCobotPath(state);
+  assert.equal(state.pathLine.getTotalVertices(), 2);
+  const finalLine = state.pathLine;
+  disposeCobotState(state);
+  assert.equal(finalLine.isDisposed(), true);
+});
 
 for (const shape of ['disc', 'can', 'box', 'pyramid']) {
   test(`picks and places an offset ${shape} with collision checks`, t => {
@@ -127,6 +178,50 @@ test('pause preserves an acquired part and resumes the same pickup', t => {
   assert.equal(state.targetedItem, part);
   runUntil(state, () => state.phase === 'drop_recenter');
 });
+
+test('executes taught move and wait steps between pickup and drop', t => {
+  const { state, part } = setup(t);
+  const waypoint = [1.3, 2, 1.3];
+  state.program = [state.program[0], { action: 'move', pos: waypoint },
+    { action: 'wait', duration: 0.6 }, state.program[1]];
+  let visitedMove = false;
+  let waitFrames = 0;
+  runUntil(state, () => state.lastDroppedItemId === part.id, () => {
+    if (state.stepIndex === 1 && state.phase === 'next') {
+      visitedMove = true;
+      assert.ok(Vector3.Distance(state.gripperTip.getAbsolutePosition(), new Vector3(...waypoint)) < 0.12);
+    }
+    if (state.stepIndex === 2 && state.phase === 'wait_step') {
+      waitFrames++;
+      assert.equal(state.grabbedItem, part);
+      assert.equal(state.gripperOpen, false);
+    }
+  });
+  assert.equal(visitedMove, true, 'pickup must not skip taught waypoints');
+  assert.ok(waitFrames >= 36, 'the programmed wait must run with the payload held');
+});
+
+for (const fps of [8, 15, 30]) {
+  test(`completes pickup/drop with ${fps} Hz controller updates`, t => {
+    const { state, part } = setup(t, { offset: 0.8 });
+    for (let frame = 0; frame < 20 * fps && state.lastDroppedItemId !== part.id; frame++) tickCobot(state, 1 / fps, true);
+    assert.equal(state.lastDroppedItemId, part.id);
+    assert.ok(Vector3.Distance(part.pos, new Vector3(2.5, 1 + partHalfHeight(part), 0)) < 0.001);
+  });
+}
+
+for (const showWalls of [false, true]) {
+  test(`places into an elevated pile with walls ${showWalls ? 'enabled' : 'disabled'}`, t => {
+    const { state, part } = setup(t);
+    const destination = state.obstacles.find(item => item.id === 'dest');
+    destination.type = 'pile';
+    destination.position[1] = 0.2;
+    destination.config = { showWalls };
+    runUntil(state, () => state.lastDroppedItemId === part.id);
+    assert.ok(Math.abs(part.pos.y - (0.2 + 0.72 + partHalfHeight(part))) < 0.001);
+    assert.ok(Math.hypot(part.pos.x - 2.5, part.pos.z) < 0.001);
+  });
+}
 
 test('generated auto-organize work survives scene configuration synchronization', t => {
   const { state, part } = setup(t);

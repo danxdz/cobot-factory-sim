@@ -1,10 +1,11 @@
 import { Vector3 } from '@babylonjs/core';
 import { SimItem,simState } from '../../simState';
 import { PartSize,PlacedItem } from '../../types';
-import { COBOT_PEDESTAL_SAFEZONE_RADIUS,DISC_RADIUS,DROP_RECENTER_CLEARANCE,IK_BASE_CLEARANCE_RADIUS,STACK_SLOT_COLORS } from './constants';
+import { COBOT_PEDESTAL_SAFEZONE_RADIUS,DISC_RADIUS,DROP_HOVER_CLEARANCE,DROP_RECENTER_CLEARANCE,IK_BASE_CLEARANCE_RADIUS,STACK_SLOT_COLORS } from './constants';
 import { dropBaseCenterY,dropObstacles,itemFootprintHit,partHint,quantizeHeight,slotCaptureRadius,stackAwareClearanceAt,stackCenterYAt,supportTopAt } from './geometry';
 import { clamp } from './math';
-import { PartLike,SHAPE_ORDER,partRadiusForSpec,partShape } from './partGeometry';
+import { PartLike,SHAPE_ORDER,partHalfHeight,partRadiusForSpec,partShape } from './partGeometry';
+import { projectCobotTarget } from './reach';
 import { dropTargetReserved,reserveDropTarget } from './reservations';
 import type { CobotState } from './stateTypes';
 
@@ -49,12 +50,27 @@ export function getOrganizedDropTarget(
 ): Vector3 | null {
     const grabbedOrHint = itemHint ?? (state.grabbedItem ? partHint(state.grabbedItem) : null);
     if (!grabbedOrHint) return null;
-    // Receivers consume parts at their center; they are not storage grids.
+    const reachable = (target: Vector3) => {
+        const approach = target.clone();
+        approach.y = quantizeHeight(Math.max(
+            target.y + partHalfHeight(grabbedOrHint) + DROP_HOVER_CLEARANCE,
+            stackAwareClearanceAt(state, target.x, target.z, true) - 0.06,
+            state.position[1] + 0.88), 0.03);
+        return Vector3.Distance(approach, projectCobotTarget(state, approach)) < 0.025;
+    };
+    // Receivers consume within their central capture area, not a storage grid.
     if (container.type === 'receiver' || container.type === 'indexed_receiver') {
-        const target = new Vector3(...container.position);
-        if (isTemporarilyAvoidedDropTarget(state, target)) return null;
-        target.y = dropBaseCenterY(state, target, grabbedOrHint);
-        return target;
+        state.basePivot.computeWorldMatrix(true);
+        const center = new Vector3(...container.position);
+        const towardMount = state.basePivot.getAbsolutePosition().subtract(center);
+        towardMount.y = 0;
+        towardMount.normalize();
+        for (const inset of [0, 0.1, 0.2, 0.26]) {
+            const target = center.add(towardMount.scale(inset));
+            target.y = dropBaseCenterY(state, target, grabbedOrHint);
+            if (!isTemporarilyAvoidedDropTarget(state, target) && reachable(target)) return target;
+        }
+        return null;
     }
     const gridW = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[0] || 3)));
     const gridD = Math.max(1, Math.min(6, Math.round(container.config?.tableGrid?.[1] || 3)));
@@ -82,6 +98,11 @@ export function getOrganizedDropTarget(
     const ignored = ignoreItem ?? state.grabbedItem;
     const slotItems = assignItemsToSlots(slots, ignored, Math.max(stackRadius * 1.05, 0.32));
     const slotCounts = slotItems.map(items => items.length);
+    const reachableSlots = slots.map(slot => {
+        const candidate = slot.clone();
+        candidate.y = stackCenterYAt(slot.x, slot.z, dropBaseCenterY(state, slot, grabbedOrHint), grabbedOrHint, ignored, stackRadius);
+        return reachable(candidate);
+    });
     const itemColor = grabbedOrHint.color;
     const itemSize = grabbedOrHint.size;
     const itemShape = partShape(grabbedOrHint);
@@ -146,6 +167,7 @@ export function getOrganizedDropTarget(
         let bestCount = Number.POSITIVE_INFINITY;
         let bestRank = Number.POSITIVE_INFINITY;
         for (const idx of preferredIndices) {
+            if (!reachableSlots[idx]) continue;
             if (isTemporarilyAvoidedDropTarget(state, slots[idx])) continue;
             if (!predicate(idx)) continue;
             const count = slotCounts[idx];
@@ -165,6 +187,7 @@ export function getOrganizedDropTarget(
         let bestCount = -1;
         let bestRank = Number.POSITIVE_INFINITY;
         for (const idx of preferredIndices) {
+            if (!reachableSlots[idx]) continue;
             if (isTemporarilyAvoidedDropTarget(state, slots[idx])) continue;
             if (!predicate(idx)) continue;
             const count = slotCounts[idx];

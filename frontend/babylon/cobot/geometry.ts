@@ -199,17 +199,18 @@ export function itemFootprintHit(item: PlacedItem, x: number, z: number, pad = 0
 }
 
 export function machineTopY(item: PlacedItem): number {
+    const baseY = item.position[1];
     switch (item.type) {
-        case 'table': return item.config?.tableHeight || 0.45;
-        case 'belt': return item.config?.beltHeight || 0.538;
-        case 'cobot': return COBOT_PLATFORM_TOP_Y;
+        case 'table': return baseY + (item.config?.tableHeight || 0.45);
+        case 'belt': return baseY + (item.config?.beltHeight || 0.538);
+        case 'cobot': return baseY + COBOT_PLATFORM_TOP_Y;
+        case 'pile': return baseY + (item.config?.machineHeight || 0.7) + 0.02;
         case 'sender':
         case 'receiver':
         case 'indexed_receiver':
-        case 'pile':
-            return item.config?.machineHeight || 0.538;
+            return baseY + (item.config?.machineHeight || 0.538);
         default:
-            return 0.02;
+            return baseY + 0.02;
     }
 }
 
@@ -226,7 +227,9 @@ export function machineWallY(item: PlacedItem): number {
     switch (item.type) {
         case 'receiver':
         case 'indexed_receiver':
-            return 1.2;
+            return machineTopY(item) + 0.47;
+        case 'pile':
+            return machineTopY(item) + (item.config?.showWalls !== false ? 0.58 : 0);
         default:
             return machineTopY(item);
     }

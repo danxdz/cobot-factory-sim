@@ -1,4 +1,5 @@
 import { useCallback,useEffect,useState } from 'react';
+import { FIRST_SHIFT, challengeBuildAllowed, challengeLayout, challengeTemplates, freshChallenge, isChallengeFixture, layoutCost, nextChallengeTemplate, recordDelivery } from './game/challenge';
 import { Direction,FactoryState,ITEM_COSTS,ItemConfig,ItemType,MachineRuntimeState,PartTemplate,PlacedItem } from './types';
 
 const STORAGE_KEY = 'cobot-factory-sim-v10';
@@ -196,9 +197,65 @@ const initialState = loadState() || {
 class Store {
     state: FactoryState;
     listeners = new Set<() => void>();
+    private sandboxSnapshot: Pick<FactoryState, 'credits' | 'score' | 'placedItems' | 'partTemplates' | 'simSpeedMult'> | null = null;
+    private challengeTime = 0;
+    private challengeIdle = 0;
+    private challengeRobotTime = 0;
 
     constructor() {
         this.state = {
+            challenge: null,
+            enterChallenge: () => {
+                if (this.state.challenge) return;
+                const { credits, score, placedItems, partTemplates, simSpeedMult } = this.state;
+                this.sandboxSnapshot = structuredClone({ credits, score, placedItems, partTemplates, simSpeedMult });
+                this.state.setIsRunning(false);
+                const layout = challengeLayout(defaultItems);
+                this.setState({ challenge: freshChallenge(), placedItems: layout,
+                    partTemplates: structuredClone(challengeTemplates), credits: FIRST_SHIFT.budget - layoutCost(layout),
+                    score: 0, simSpeedMult: 1, selectedItemId: null, machineStates: {}, draftPlacement: null });
+            },
+            exitChallenge: () => {
+                if (!this.state.challenge || !this.sandboxSnapshot) return;
+                this.state.setIsRunning(false);
+                this.setState({ ...this.sandboxSnapshot, challenge: null, isRunning: false, isPaused: false,
+                    selectedItemId: null, draftPlacement: null, buildMode: null, machineStates: {} });
+                this.sandboxSnapshot = null;
+            },
+            retryChallenge: () => {
+                if (!this.state.challenge) return;
+                this.state.setIsRunning(false);
+                this.challengeTime = this.challengeIdle = this.challengeRobotTime = 0;
+                this.setState({ challenge: freshChallenge(), isPaused: false, selectedItemId: null });
+            },
+            advanceChallenge: (delta, idleRobots, totalRobots) => {
+                const run = this.state.challenge;
+                if (!run || run.status !== 'running' || !this.state.isRunning || this.state.isPaused || !Number.isFinite(delta) || delta <= 0) return;
+                this.challengeTime += delta;
+                this.challengeIdle += idleRobots * delta;
+                this.challengeRobotTime += totalRobots * delta;
+                if (this.challengeTime < 0.1) return;
+                const elapsed = Math.min(FIRST_SHIFT.duration, run.elapsed + this.challengeTime);
+                this.setState({ challenge: { ...run, elapsed,
+                    idleRobotSeconds: run.idleRobotSeconds + this.challengeIdle,
+                    robotSeconds: run.robotSeconds + this.challengeRobotTime,
+                    status: elapsed >= FIRST_SHIFT.duration ? 'failed' : 'running' },
+                    ...(elapsed >= FIRST_SHIFT.duration ? { isPaused: true } : {}) });
+                this.challengeTime = this.challengeIdle = this.challengeRobotTime = 0;
+            },
+            spawnChallengePart: () => {
+                const run = this.state.challenge;
+                if (!run || !this.state.isRunning || this.state.isPaused) return null;
+                const template = nextChallengeTemplate(run);
+                if (template) this.setState({ challenge: { ...run, spawned: run.spawned + 1 } });
+                return template;
+            },
+            deliverChallengePart: (receiverId, part) => {
+                const run = this.state.challenge;
+                if (!run || !this.state.isRunning || this.state.isPaused) return;
+                const next = recordDelivery(run, receiverId, part);
+                if (next !== run) this.setState({ challenge: next, ...(next.status === 'won' || next.status === 'failed' ? { isPaused: true } : {}) });
+            },
             credits: initialState.credits,
             score: initialState.score,
             placedItems: initialState.placedItems,
@@ -222,14 +279,17 @@ class Store {
             machineStates: {},
 
             setDraftPlacement: (draft) => this.setState({ draftPlacement: draft }),
-            setCredits: (credits: number) => this.setState({ credits }),
+            setCredits: (credits: number) => { if (!this.state.challenge) this.setState({ credits }); },
             setScore: (score) => {
                 const newScore = typeof score === 'function' ? score(this.state.score) : score;
                 this.setState({ score: newScore });
             },
             setIsRunning: (isRunning: boolean) => {
+                if (isRunning && this.state.challenge && ['won', 'failed'].includes(this.state.challenge.status)) return;
                 if (isRunning && !this.state.isRunning) {
+                    this.challengeTime = this.challengeIdle = this.challengeRobotTime = 0;
                     this.setState({
+                        ...(this.state.challenge ? { challenge: { ...freshChallenge(), status: 'running' as const } } : {}),
                         isRunning,
                         isPaused: false,
                         score: 0,
@@ -253,10 +313,14 @@ class Store {
                         )
                     });
                 } else {
-                    this.setState({ isRunning, isPaused: false, buildMode: null, draftPlacement: null, teachAction: null, selectedItemId: null, moveModeItemId: null });
+                    this.setState({ isRunning, isPaused: false, buildMode: null, draftPlacement: null, teachAction: null, selectedItemId: null, moveModeItemId: null,
+                        ...(!isRunning && this.state.challenge ? { challenge: freshChallenge() } : {}) });
                 }
             },
-            setIsPaused: (isPaused: boolean) => this.setState({ isPaused }),
+            setIsPaused: (isPaused: boolean) => {
+                if (this.state.challenge && ['won', 'failed'].includes(this.state.challenge.status)) return;
+                this.setState({ isPaused });
+            },
             setSimSpeedMult: (mult: number) => this.setState({ simSpeedMult: Math.max(0.2, Math.min(10, mult)) }),
             setCameraPreviewFps: (fps: number) => this.setState({ cameraPreviewFps: Math.max(1, Math.min(30, Math.round(fps))) }),
             setCameraPreviewResolution: (width: number, height: number) => this.setState({
@@ -264,6 +328,7 @@ class Store {
                 cameraPreviewHeight: Math.max(100, Math.min(768, Math.round(height))),
             }),
             setBuildMode: (buildMode: ItemType | null) => {
+                if (this.state.challenge && buildMode && (!challengeBuildAllowed(buildMode) || this.state.isRunning)) return;
                 let defaultConfig: ItemConfig = { speed: 1 };
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.spawnTemplateId = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
@@ -280,22 +345,26 @@ class Store {
             setBuildConfig: (config: Partial<ItemConfig>) => this.setState({ buildConfig: { ...this.state.buildConfig, ...config } }),
             setSelectedItemId: (id: string | null) => this.setState({ selectedItemId: id, buildMode: null, draftPlacement: null, teachAction: null, moveModeItemId: null, moveModeOriginalItem: null }),
             setMoveModeItemId: (id: string | null) => {
+                if (this.state.challenge && id && isChallengeFixture(id)) return;
                 const item = id ? this.state.placedItems.find(i => i.id === id) : null;
                 this.setState({ moveModeItemId: id, moveModeOriginalItem: item ? JSON.parse(JSON.stringify(item)) : null });
             },
             setTeachAction: (action) => this.setState({ teachAction: action }),
             addPartTemplate: (template) => {
+                if (this.state.challenge) return '';
                 const id = `tpl_${generateId()}`;
                 const nextTemplate: PartTemplate = { ...template, id };
                 this.setState({ partTemplates: [...this.state.partTemplates, nextTemplate] });
                 return id;
             },
             updatePartTemplate: (id, updates) => {
+                if (this.state.challenge) return;
                 this.setState({
                     partTemplates: this.state.partTemplates.map(t => t.id === id ? { ...t, ...updates } : t)
                 });
             },
             removePartTemplate: (id) => {
+                if (this.state.challenge) return;
                 if (this.state.partTemplates.length <= 1) return;
                 this.setState({
                     partTemplates: this.state.partTemplates.filter(t => t.id !== id),
@@ -310,6 +379,7 @@ class Store {
                 });
             },
             clonePartTemplate: (id) => {
+                if (this.state.challenge) return null;
                 const src = this.state.partTemplates.find(t => t.id === id);
                 if (!src) return null;
                 const nextId = `tpl_${generateId()}`;
@@ -329,6 +399,7 @@ class Store {
             clearMachineStates: () => this.setState({ machineStates: {} }),
 
             addPlacedItem: (item: Omit<PlacedItem, 'id'>) => {
+                if (this.state.challenge && (this.state.isRunning || !challengeBuildAllowed(item.type))) return;
                 const cost = ITEM_COSTS[item.type];
                 if (this.state.credits >= cost) {
                     this.setState({
@@ -338,6 +409,7 @@ class Store {
                 }
             },
             updatePlacedItem: (id: string, updates: Partial<PlacedItem>) => {
+                if (this.state.challenge && isChallengeFixture(id)) return;
                 this.setState({
                     placedItems: this.state.placedItems.map(item => {
                         if (item.id === id) {
@@ -352,7 +424,10 @@ class Store {
                 });
             },
             removePlacedItem: (id: string) => {
+                if (this.state.challenge && (isChallengeFixture(id) || this.state.isRunning)) return;
+                const removed = this.state.placedItems.find(item => item.id === id);
                 this.setState({
+                    ...(this.state.challenge && removed ? { credits: this.state.credits + ITEM_COSTS[removed.type] } : {}),
                     placedItems: this.state.placedItems.filter((i: PlacedItem) => i.id !== id),
                     machineStates: Object.fromEntries(Object.entries(this.state.machineStates).filter(([key]) => key !== id)),
                     selectedItemId: this.state.selectedItemId === id ? null : this.state.selectedItemId,
@@ -361,6 +436,12 @@ class Store {
                 });
             },
             resetFactory: () => {
+                if (this.state.challenge) {
+                    this.state.retryChallenge();
+                    const layout = challengeLayout(defaultItems);
+                    this.setState({ placedItems: layout, credits: FIRST_SHIFT.budget - layoutCost(layout) });
+                    return;
+                }
                 this.setState({
                     credits: 5000,
                     score: 0,
@@ -380,8 +461,17 @@ class Store {
     getState = () => this.state;
 
     setState = (updates: Partial<FactoryState>) => {
+        const previous = this.state;
         this.state = { ...this.state, ...updates };
         this.listeners.forEach(l => l());
+        // A challenge is temporary; never overwrite the player's saved sandbox.
+        if (this.state.challenge) return;
+
+        // Runtime telemetry and selection changes do not change the saved layout.
+        // Avoid synchronous JSON serialization/localStorage writes on every tick.
+        const persistedKeys = ['credits', 'placedItems', 'partTemplates', 'cameraPreviewFps',
+            'cameraPreviewWidth', 'cameraPreviewHeight'] as const;
+        if (!persistedKeys.some(key => previous[key] !== this.state[key])) return;
 
         try {
             const { credits, placedItems, partTemplates, cameraPreviewFps, cameraPreviewWidth, cameraPreviewHeight } = this.state;

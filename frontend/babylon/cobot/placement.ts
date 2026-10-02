@@ -5,6 +5,7 @@ import { carriedPayloadHeight,dropBaseCenterY,dropObstacles,itemFootprintHit,par
 import { PartLike,partHalfHeight } from './partGeometry';
 import { carryTravelY,currentDropAnchor,currentPickAnchor,nextPickWaitTarget,nextProgramActionIndex } from './programTargets';
 import { releaseDropReservation } from './reservations';
+import { projectCobotTarget } from './reach';
 import type { CobotState } from './stateTypes';
 import { logCobotEvent } from './telemetry';
 
@@ -56,8 +57,14 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                         }
                         // Keep holding at clearance height until a slot is free.
                     } else if (nextDropIndex !== null) {
-                        state.stepIndex = nextDropIndex;
-                        state.phase = 'transit_drop';
+                        const nextIndex = (state.stepIndex + 1) % state.program.length;
+                        if (state.program[nextIndex].action === 'drop') {
+                            state.stepIndex = nextIndex;
+                            state.phase = 'transit_drop';
+                        } else {
+                            // Taught move/wait steps are part of the carry route.
+                            state.phase = 'next';
+                        }
                     } else state.phase = 'next';
                 }
                 break;
@@ -76,7 +83,9 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
 
                 const travelY = carryTravelY(state, tgt);
                 state.desiredTarget.set(tgt.x, travelY, tgt.z);
-                if (Vector3.Distance(actualTip, state.desiredTarget) < 0.18) {
+                // High travel poses lose horizontal reach. Once the reachable
+                // staging pose is reached, hover can lower toward the station.
+                if (Vector3.Distance(actualTip, projectCobotTarget(state, state.desiredTarget)) < 0.18) {
                     state.phase = 'hover_drop';
                     state.waitTimer = 0;
                 }

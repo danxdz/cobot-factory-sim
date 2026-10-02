@@ -52,6 +52,14 @@ export function resetCobotRun(state: CobotState) {
     state.itemMotionTracker = new WeakMap();
     state.lastDroppedItemId = undefined;
     state.lastMotionTraceAt = undefined;
+    state.lastPreviewUpdate = undefined;
+    state.lastLoggedPhase = '';
+    state.lastStatusReasonKey = '';
+    state.lastStatusReasonAt = 0;
+    state.sensorHazards = [0, 0, 0, 0];
+    state.sensorMinDist = 2;
+    state.safetySpeedFactor = 1;
+    state.reducedSpeedActive = false;
     state.avoidDropTarget = null;
     state.avoidDropUntil = 0;
     state.pathReplanCooldown = 0;
@@ -104,6 +112,7 @@ export function syncCobotConfig(state: CobotState, item: PlacedItem) {
 
 /** Release ownership before disposing meshes; physics can settle a held part. */
 export function disposeCobotState(state: CobotState) {
+    state.pathLine?.dispose(false, true);
     releasePickup(state);
     if (state.grabbedItem?.state === 'grabbed') state.grabbedItem.state = 'free';
     state.grabbedItem = null;

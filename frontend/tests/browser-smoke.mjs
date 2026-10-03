@@ -49,7 +49,10 @@ try {
     if (await evaluate('!!document.querySelector("canvas")')) break;
     await delay(250);
   }
-  if (process.argv.includes('--return')) {
+  if (process.argv.includes('--build')) {
+    const { checkBuild } = await import('./build-browser.mjs');
+    await checkBuild({ evaluate, send, delay });
+  } else if (process.argv.includes('--return')) {
     const { checkReturn } = await import('./return-browser.mjs');
     await checkReturn({ evaluate, send, delay });
   } else if (process.argv.includes('--pickup')) {
@@ -124,7 +127,7 @@ try {
   assert.ok(defaultResult.length >= 2 && defaultResult.every(robot => robot.dropped), 'both default-layout robots must complete a drop');
   }
   assert.deepEqual(errors, [], 'browser console must contain no runtime errors');
-  console.log(process.argv.includes('--return') ? 'Return browser smoke passed.' : process.argv.includes('--pickup') ? 'Pickup browser smoke passed.' : process.argv.includes('--neighbors') ? 'Neighbor browser smoke passed.' : process.argv.includes('--challenge') ? 'Challenge browser smoke passed.' : 'Browser smoke passed: WebGL, physics, four start/stop cycles, path overlay, off-grid receiver scoring.');
+  console.log(process.argv.includes('--build') ? 'Shop browser smoke passed.' : process.argv.includes('--return') ? 'Return browser smoke passed.' : process.argv.includes('--pickup') ? 'Pickup browser smoke passed.' : process.argv.includes('--neighbors') ? 'Neighbor browser smoke passed.' : process.argv.includes('--challenge') ? 'Challenge browser smoke passed.' : 'Browser smoke passed: WebGL, physics, four start/stop cycles, path overlay, off-grid receiver scoring.');
   await send('Browser.close');
 } finally {
   socket?.close();

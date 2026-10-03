@@ -32,6 +32,10 @@ Run `node tests/browser-smoke.mjs --pickup` to check consecutive moving conveyor
 
 Run `node tests/browser-smoke.mjs --return` to check both default cobots over repeated deliveries and verify that their hands follow the planned return route with level suction pads.
 
+In Sandbox, open **Surfaces**, **Machines**, or **Tech**, select equipment, click an empty tile, and press **Validate**. Choosing equipment pauses an active simulation while preserving parts and robot progress; press **Resume** when finished. First Shift equipment changes require returning to planning with Retry. Disabled shop items show the reason.
+
+Run `node tests/browser-smoke.mjs --build` to verify the live-run purchase, placement, refund, and resume flow in isolated Chrome.
+
 The public robot entrypoint is `frontend/babylon/cobotMesh.ts`. Controller orchestration, program execution, pickup, placement, reach, planning, collision, motion, lifecycle, and visualization live in separate modules under `frontend/babylon/cobot/`.
 
 See [AUDIT.md](AUDIT.md) for reproduced bugs, verification results, browser-test instructions, and remaining limitations.

@@ -141,3 +141,18 @@ Reproduced default c2's visible hand deviating up to 1.38 world units from its p
 Motion now bounds progress along each proposed Cartesian segment by the same per-frame angular budget used by the base pose solver. It scales the integrated velocity accordingly and lets the base catch up when needed. This keeps the proposed segment intact instead of projecting the hand sideways, preserves radial motion, and uses the shortest angular difference across the angle wrap. Existing lift clearance, obstacle planning, and neighbor braking remain active. Sharp turns may take longer than the previously inaccurate motion; this is route tracking, not a claim of globally optimal planning for arbitrary layouts.
 
 Validation: the 69-test suite passed, followed by the added default-c2 return regression (70 tests total), plus the production build. The return regression completes with 5.52 units of tool travel and less than 0.0001 units of planar tracking error. `node tests/browser-smoke.mjs --return` also passed in isolated Chrome: c1 completed three deliveries and c2 two, with 163 and 108 sampled return frames respectively, maximum planar tracking errors below 0.000001 units, level suction pads, and no browser runtime errors.
+
+
+## Shop, budget, and placement lifecycle review
+
+The shop disabled all equipment whenever `isRunning` was true, including paused runs. Its build-mode action also switched `isRunning` off, which resets simulation parts and controllers. Sandbox purchases now pause an active run without stopping it. Selecting equipment, confirming placement, canceling, and resuming preserve existing runtime progress. First Shift retains its planning-only equipment rule and shows an explicit retry message; insufficient credits and unavailable challenge equipment also have visible explanations.
+
+Related fixes from tracing the purchase flow:
+
+- Placement returns success/failure to the UI; failed purchases no longer dismiss the draft as though they succeeded. The store rejects purchases during active unpaused simulation and insufficient credit.
+- Sale and refund happen together in the store. A missing/already sold item cannot refund again, and the UI no longer performs a separate credit update.
+- Starting, resuming, or resetting clears unbought previews. Reset also clears stale move state so an unbought draft cannot remain in the scene.
+
+Validation: all 75 automated tests and the production build pass. The isolated Chrome `--build` test uses the actual Surfaces menu, table button, floor pointer events, Validate and Sell buttons. It verifies the live run pauses, part identities and controller phase/time survive, exactly 100 credits are charged/refunded, simulation resumes, and insufficient-credit feedback appears. Challenge budget/fixture restrictions, Sandbox restoration, and the existing robot motion/pick/drop tests remain covered. The first browser harness attempt used an incorrect menu label (Storage instead of Surfaces); correcting the test selector allowed the complete UI flow to pass.
+
+This pass reviewed purchase controls, budget mutations, pause/start/reset transitions, draft cleanup, and scene synchronization; it is not an exhaustive proof that every saved layout is correct. The earlier documented custom reachability, long-run performance, variable time step, and imported-layout validation limitations remain open. Dependency advisories were not re-fetched in this pass.

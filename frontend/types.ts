@@ -194,7 +194,7 @@ export interface FactoryState {
     setTeachAction: (action: 'pick' | 'drop' | null) => void;
     setMachineState: (id: string, runtime: MachineRuntimeState) => void;
     clearMachineStates: () => void;
-    addPlacedItem: (item: Omit<PlacedItem, 'id'>) => void;
+    addPlacedItem: (item: Omit<PlacedItem, 'id'>) => boolean;
     updatePlacedItem: (id: string, updates: Partial<PlacedItem>) => void;
     removePlacedItem: (id: string) => void;
     resetFactory: () => void;

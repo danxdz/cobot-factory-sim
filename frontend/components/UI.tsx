@@ -5,7 +5,8 @@ import { useFactoryStore } from '../store';
 import { Direction,ITEM_COSTS,ItemConfig,ItemType,PartShape,PartSize,PlacedItem,ProgramAction,ProgramStep } from '../types';
 import { PartPreview3D } from './PartPreview3D';
 import { ChallengePanel } from './ChallengePanel';
-import { challengeBuildAllowed, isChallengeFixture } from '../game/challenge';
+import { isChallengeFixture } from '../game/challenge';
+import { buildBlockedReason } from '../game/buildRules';
 
 const PICK_COLORS = [
     { label: 'Red', value: '#ef4444' },
@@ -1293,7 +1294,7 @@ export const UI: React.FC = () => {
         const cost = ITEM_COSTS[draftPlacement.type];
         if (credits >= cost) {
             const { id, ...rest } = draftPlacement;
-            addPlacedItem(rest);
+            if (!addPlacedItem(rest)) return;
             setDraftPlacement(null);
             if (!keepBuilding) {
                 setBuildMode(null);
@@ -1381,7 +1382,6 @@ export const UI: React.FC = () => {
     const handleSellSelected = () => {
         if (selectedItem) {
             removePlacedItem(selectedItem.id);
-            if (!challenge) setCredits(creditsValue + ITEM_COSTS[selectedItem.type]);
         }
     };
 
@@ -3146,7 +3146,8 @@ export const UI: React.FC = () => {
                                                                 handleBuildClick(type);
                                                                 setActiveGroup(null);
                                                             }}
-                                                            disabled={credits < ITEM_COSTS[type] || isRunning || (!!challenge && !challengeBuildAllowed(type))}
+                                                            disabled={!!buildBlockedReason({credits, challenge, isRunning}, type)}
+                                                            hint={buildBlockedReason({credits, challenge, isRunning}, type) ?? (isRunning ? 'Pauses simulation to place equipment' : 'Select, place, then validate')}
                                                         />
                                                     ))}
                                                 </div>
@@ -3181,7 +3182,8 @@ export const UI: React.FC = () => {
                                 <div>
                                     <div className="font-bold text-white mb-1">Build</div>
                                     <ul className="list-disc pl-5 space-y-1">
-                                        <li>Select an item group in the bottom toolbar, then click a grid tile to place.</li>
+                                        <li>Select equipment in the bottom toolbar, click an empty grid tile, then Validate to buy it.</li>
+                                        <li>Sandbox purchases pause a running simulation. Resume after building to keep your parts and robot progress.</li>
                                         <li>Use Rotate on selected items to change direction or cycle cobot mount slots.</li>
                                         <li>Stop pauses with reset confirmation; Play resumes simulation.</li>
                                     </ul>
@@ -3429,10 +3431,11 @@ export const UI: React.FC = () => {
     );
 };
 
-const BuildButton: React.FC<{ title: string, cost: number, isActive: boolean, onClick: () => void, disabled: boolean, color?: string }> = ({ title, cost, isActive, onClick, disabled, color }) => (
+const BuildButton: React.FC<{ title: string, cost: number, isActive: boolean, onClick: () => void, disabled: boolean, color?: string, hint?: string }> = ({ title, cost, isActive, onClick, disabled, color, hint }) => (
     <button
         onClick={onClick}
         disabled={disabled}
+        title={hint}
         className={`px-6 py-3 rounded-xl flex flex-col items-center justify-center transition-all min-w-[120px]
             ${isActive
                 ? color === 'amber' ? 'bg-amber-500/20 border-2 border-amber-500 shadow-inner' : 'bg-blue-500/20 border-2 border-blue-500 shadow-inner'
@@ -3442,5 +3445,6 @@ const BuildButton: React.FC<{ title: string, cost: number, isActive: boolean, on
     >
         <span className={`font-black text-sm ${isActive ? (color === 'amber' ? 'text-amber-400' : 'text-blue-400') : 'text-gray-200'}`}>{title}</span>
         <span className="text-xs font-mono text-gray-500 mt-1">{cost} CR</span>
+        {hint && <span className="text-[10px] text-gray-400 mt-1 text-center">{hint}</span>}
     </button>
 );

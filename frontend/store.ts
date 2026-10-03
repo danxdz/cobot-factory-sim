@@ -1,6 +1,7 @@
 import { useCallback,useEffect,useState } from 'react';
-import { FIRST_SHIFT, challengeBuildAllowed, challengeLayout, challengeTemplates, freshChallenge, isChallengeFixture, layoutCost, nextChallengeTemplate, recordDelivery } from './game/challenge';
+import { FIRST_SHIFT, challengeLayout, challengeTemplates, freshChallenge, isChallengeFixture, layoutCost, nextChallengeTemplate, recordDelivery } from './game/challenge';
 import { Direction,FactoryState,ITEM_COSTS,ItemConfig,ItemType,MachineRuntimeState,PartTemplate,PlacedItem } from './types';
+import { buildBlockedReason } from './game/buildRules';
 
 const STORAGE_KEY = 'cobot-factory-sim-v10';
 const LEGACY_STORAGE_KEY = 'cobot-factory-sim-v9';
@@ -298,6 +299,7 @@ class Store {
                         moveModeOriginalItem: null,
                         teachAction: null,
                         buildMode: null,
+                        draftPlacement: null,
                         placedItems: this.state.placedItems.map(item => item.type === 'cobot'
                             ? {
                                 ...item,
@@ -319,7 +321,7 @@ class Store {
             },
             setIsPaused: (isPaused: boolean) => {
                 if (this.state.challenge && ['won', 'failed'].includes(this.state.challenge.status)) return;
-                this.setState({ isPaused });
+                this.setState({ isPaused, ...(!isPaused ? { buildMode: null, draftPlacement: null } : {}) });
             },
             setSimSpeedMult: (mult: number) => this.setState({ simSpeedMult: Math.max(0.2, Math.min(10, mult)) }),
             setCameraPreviewFps: (fps: number) => this.setState({ cameraPreviewFps: Math.max(1, Math.min(30, Math.round(fps))) }),
@@ -328,7 +330,7 @@ class Store {
                 cameraPreviewHeight: Math.max(100, Math.min(768, Math.round(height))),
             }),
             setBuildMode: (buildMode: ItemType | null) => {
-                if (this.state.challenge && buildMode && (!challengeBuildAllowed(buildMode) || this.state.isRunning)) return;
+                if (buildMode && buildBlockedReason(this.state, buildMode)) return;
                 let defaultConfig: ItemConfig = { speed: 1 };
                 if (buildMode === 'sender') { defaultConfig.speed = 3; defaultConfig.spawnColor = 'any'; defaultConfig.spawnSize = 'any'; defaultConfig.spawnTemplateId = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
                 if (buildMode === 'receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
@@ -339,7 +341,9 @@ class Store {
                 if (buildMode === 'pile') { defaultConfig.pileCount = 0; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; defaultConfig.tableGrid = [3, 3]; }
                 if (buildMode === 'indexed_receiver') { defaultConfig.acceptColor = 'any'; defaultConfig.machineSize = [2.5, 2.5]; defaultConfig.machineHeight = 1; }
 
-                this.setState({ buildMode, draftPlacement: null, moveModeItemId: null, isRunning: false, isPaused: false, selectedItemId: null, teachAction: null, buildConfig: defaultConfig });
+                this.setState({ buildMode, draftPlacement: null, moveModeItemId: null, moveModeOriginalItem: null,
+                    ...(buildMode && this.state.isRunning ? { isPaused: true } : {}),
+                    selectedItemId: null, teachAction: null, buildConfig: defaultConfig });
             },
             setBuildRotation: (buildRotation: Direction) => this.setState({ buildRotation }),
             setBuildConfig: (config: Partial<ItemConfig>) => this.setState({ buildConfig: { ...this.state.buildConfig, ...config } }),
@@ -399,14 +403,13 @@ class Store {
             clearMachineStates: () => this.setState({ machineStates: {} }),
 
             addPlacedItem: (item: Omit<PlacedItem, 'id'>) => {
-                if (this.state.challenge && (this.state.isRunning || !challengeBuildAllowed(item.type))) return;
+                if (buildBlockedReason(this.state, item.type) || (this.state.isRunning && !this.state.isPaused)) return false;
                 const cost = ITEM_COSTS[item.type];
-                if (this.state.credits >= cost) {
-                    this.setState({
-                        credits: this.state.credits - cost,
-                        placedItems: [...this.state.placedItems, { ...item, id: generateId() }],
-                    });
-                }
+                this.setState({
+                    credits: this.state.credits - cost,
+                    placedItems: [...this.state.placedItems, { ...item, id: generateId() }],
+                });
+                return true;
             },
             updatePlacedItem: (id: string, updates: Partial<PlacedItem>) => {
                 if (this.state.challenge && isChallengeFixture(id)) return;
@@ -426,12 +429,14 @@ class Store {
             removePlacedItem: (id: string) => {
                 if (this.state.challenge && (isChallengeFixture(id) || this.state.isRunning)) return;
                 const removed = this.state.placedItems.find(item => item.id === id);
+                if (!removed) return;
                 this.setState({
-                    ...(this.state.challenge && removed ? { credits: this.state.credits + ITEM_COSTS[removed.type] } : {}),
+                    credits: this.state.credits + ITEM_COSTS[removed.type],
                     placedItems: this.state.placedItems.filter((i: PlacedItem) => i.id !== id),
                     machineStates: Object.fromEntries(Object.entries(this.state.machineStates).filter(([key]) => key !== id)),
                     selectedItemId: this.state.selectedItemId === id ? null : this.state.selectedItemId,
                     moveModeItemId: this.state.moveModeItemId === id ? null : this.state.moveModeItemId,
+                    moveModeOriginalItem: this.state.moveModeItemId === id ? null : this.state.moveModeOriginalItem,
                     teachAction: this.state.selectedItemId === id ? null : this.state.teachAction
                 });
             },
@@ -450,6 +455,9 @@ class Store {
                     placedItems: defaultItems,
                     partTemplates: cloneDefaultPartTemplates(),
                     buildMode: null,
+                    draftPlacement: null,
+                    moveModeItemId: null,
+                    moveModeOriginalItem: null,
                     selectedItemId: null,
                     teachAction: null,
                     machineStates: {}

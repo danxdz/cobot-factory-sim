@@ -85,11 +85,11 @@ export interface CobotState {
     stepIndex: number;
     targetedItem: SimItem | null;
     grabbedItem: SimItem | null;
+    graspYawOffset: number;
     waitTimer: number;
     autoDropTarget: Vector3 | null;
     activeDropTarget: Vector3 | null;
     isAutoProgram?: boolean;
-    toolNormalBlend?: number;
 
     position: [number, number, number];
     baseRotY: number;

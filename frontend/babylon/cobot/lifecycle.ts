@@ -42,6 +42,8 @@ export function resetCobotRun(state: CobotState) {
     resetExecution(state);
     if (state.grabbedItem?.state === 'grabbed') state.grabbedItem.state = 'free';
     state.grabbedItem = null;
+    state.graspYawOffset = 0;
+    state.wristRollTarget = 0;
     state.program = state.selfItem?.config?.program ?? [];
     state.isAutoProgram = false;
     state.gripperOpen = true;

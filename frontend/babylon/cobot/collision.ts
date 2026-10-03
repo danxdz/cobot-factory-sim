@@ -11,6 +11,7 @@ import { partHalfHeight,partRadiusForSpec } from './partGeometry';
 import { pickupContactState } from './pickupTargets';
 import { currentPickAnchor } from './programTargets';
 import type { CobotState } from './stateTypes';
+import { yieldsToNeighbor } from './neighbors';
 
 export function collisionSafetyEnabled(state: CobotState): boolean { return state.selfItem?.config?.cobotCollisionEnabled !== false; }
 
@@ -475,14 +476,13 @@ export function startRecoveryRetreat(state: CobotState, obstacle: PlacedItem | n
 }
 
 export function computeYieldTargetFromSensors(state: CobotState, _mountPos: Vector3): Vector3 | null {
-    const hazards = state.sensorHazards || [0, 0, 0, 0];
-    const maxHazard = Math.max(hazards[0], hazards[1], hazards[2], hazards[3]);
-    const selfId = state.selfItem?.id;
+    const selfId = state.selfItem?.id ?? '';
     const selfLoaded = !!state.grabbedItem;
     state.wristRoll.computeWorldMatrix(true);
     const ownWrist = state.wristRoll.getAbsolutePosition();
     let nearestOther: Vector3 | null = null;
     let nearestOtherLoaded = false;
+    let nearestOtherId = '';
     let nearestDist = Infinity;
     for (const [id, wrist] of Object.entries(simState.cobotWrists)) {
         if (!wrist || id === selfId) continue;
@@ -494,12 +494,13 @@ export function computeYieldTargetFromSensors(state: CobotState, _mountPos: Vect
             nearestDist = dist;
             nearestOther = wrist;
             nearestOtherLoaded = simState.cobotLoads[id] === true;
+            nearestOtherId = id;
         }
     }
     const neighborTooClose = !!nearestOther && nearestDist < COBOT_NEIGHBOR_YIELD_TRIGGER;
-    if (selfLoaded && nearestOtherLoaded === false && neighborTooClose) return null;
-    // Yield only on orange sensors or near-contact cobot wrist clearance.
-    if (maxHazard < 0.12 && !neighborTooClose) return null;
+    // General sensor warnings include tables and parts. They cannot grant a
+    // neighboring robot right of way, nor should both peers retract together.
+    if (!neighborTooClose || !yieldsToNeighbor(selfId, selfLoaded, nearestOtherId, nearestOtherLoaded)) return null;
 
     // Simple Rule: When yielding, immediately retract to the home (idle) target.
     // Retracting to a known safe parking spot prevents arms from wildly sweeping into other cobots or parts.

@@ -101,19 +101,8 @@ export function pickupContactState(state: CobotState, item: SimItem | null) {
             touchingSurface: false,
         };
     }
-    let targetPos = pickupAimPoint(state, item, PICK_LEAD_TIME * 0.6);
-    const pickPhaseActive =
-        state.phase === 'pick_hover' ||
-        state.phase === 'pick_descend' ||
-        state.phase === 'pick_attach';
-    if (
-        pickPhaseActive &&
-        state.lockedPickupTarget &&
-        state.lockedPickupItemId === item.id &&
-        state.simTime < state.lockedPickupUntil
-    ) {
-        targetPos = state.lockedPickupTarget.clone();
-    }
+    // Prediction guides the approach; only the live part can make contact.
+    const targetPos = item.pos.clone();
     const supportTop = supportTopAt(targetPos.x, targetPos.z, state.obstacles);
     const targetHalf = partHalfHeight(item);
     const targetRadius = partRadiusForSpec(item);
@@ -121,19 +110,15 @@ export function pickupContactState(state: CobotState, item: SimItem | null) {
     const dx = tip.x - targetPos.x;
     const dz = tip.z - targetPos.z;
     const horizontalDist = Math.sqrt(dx * dx + dz * dz);
-    const itemDx = tip.x - item.pos.x;
-    const itemDz = tip.z - item.pos.z;
-    const itemDist = Math.sqrt(itemDx * itemDx + itemDz * itemDz);
-    const effectiveDist = Math.min(horizontalDist, itemDist);
     const padGap = tip.y - targetTop;
     const suctionFootprint = Math.min(PICK_CONTACT_RADIUS, Math.max(0.16, targetRadius * 0.56));
     const surfaceFootprint = Math.min(PICK_GRAB_RADIUS, Math.max(0.18, targetRadius * 0.66));
-    const touchingPart = effectiveDist < suctionFootprint && padGap >= -PICK_HAND_CONTACT_TOLERANCE && padGap <= 0.085;
-    const touchingSurface = effectiveDist < surfaceFootprint && tip.y <= supportTop + PICK_SURFACE_CONTACT_GAP + 0.018;
+    const touchingPart = horizontalDist < suctionFootprint && padGap >= -PICK_HAND_CONTACT_TOLERANCE && padGap <= 0.085;
+    const touchingSurface = horizontalDist < surfaceFootprint && tip.y <= supportTop + PICK_SURFACE_CONTACT_GAP + 0.018;
     return {
         tip,
         targetPos,
-        horizontalDist: effectiveDist,
+        horizontalDist,
         targetRadius,
         targetTop,
         supportTop,

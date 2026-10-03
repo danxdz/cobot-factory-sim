@@ -6,11 +6,36 @@ import { clamp } from './math';
 import type { CobotState } from './stateTypes';
 import { responseBlend } from './motionProfile';
 
+function baseTurnBudget(state: CobotState, delta: number): number {
+    return COBOT_BASE_MAX_ANGULAR_SPEED * clamp(state.speed, 0.35, 1.1) * delta;
+}
+
+// Stay on the proposed Cartesian segment instead of letting the shoulder and
+// elbow extend toward a point the turntable cannot face yet. Otherwise the real
+// hand sweeps a wide arc outside the planned collision-clear route.
+export function limitBaseTurnStep(state: CobotState, start: Vector3, next: Vector3, mount: Vector3, delta: number): number {
+    const yaw = state.baseRotY + state.basePivot.rotation.y;
+    const budget = baseTurnBudget(state, delta);
+    const canFace = (point: Vector3) => Math.abs(normalizeAngle(Math.atan2(point.x - mount.x, point.z - mount.z) - yaw)) <= budget + 1e-8;
+    if (canFace(next)) return 1;
+    if (!canFace(start)) {
+        next.copyFrom(start);
+        return 0; // The pose solver catches up to the current point this frame.
+    }
+    let low = 0, high = 1;
+    for (let iteration = 0; iteration < 16; iteration++) {
+        const fraction = (low + high) * 0.5;
+        if (canFace(Vector3.Lerp(start, next, fraction))) low = fraction;
+        else high = fraction;
+    }
+    next.copyFrom(Vector3.Lerp(start, next, low));
+    return low;
+}
+
 export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L1: number, L2: number, L3: number) {
     const shoulderLimits = cobotShoulderLimits(state.selfItem?.config);
     const elbowLimits = cobotElbowLimits(state.selfItem?.config);
     const wristLimits = cobotWristLimits(state.selfItem?.config);
-    const precisePhase = state.phase === 'pick_descend' || state.phase === 'pick_attach' || state.phase === 'descend_drop';
     const cx = state.ikTarget.x - mountPos.x;
     const cz = state.ikTarget.z - mountPos.z;
     const cDist = Math.sqrt(cx * cx + cz * cz);
@@ -32,7 +57,7 @@ export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L
     // at a later waypoint swings the real tool away from the planned trajectory.
     const baseTargetYaw = normalizeAngle(worldYaw - state.baseRotY);
     const baseYawDelta = normalizeAngle(baseTargetYaw - state.basePivot.rotation.y);
-    const baseMaxStep = COBOT_BASE_MAX_ANGULAR_SPEED * clamp(state.speed, 0.35, 1.1) * delta;
+    const baseMaxStep = baseTurnBudget(state, delta);
     state.basePivot.rotation.y = normalizeAngle(
         state.basePivot.rotation.y + clamp(baseYawDelta, -baseMaxStep, baseMaxStep)
     );
@@ -66,26 +91,22 @@ export function solvePose(state: CobotState, delta: number, mountPos: Vector3, L
     const sh = clamp(Math.PI / 2 - alpha2 - beta2, shoulderLimits.min, shoulderLimits.max);
     const el = clamp(elbowAngle, elbowLimits.min, elbowLimits.max);
     const wr = Math.PI - sh - el;
-    const toolNormalPhase = precisePhase || !!state.grabbedItem;
-    const targetToolNormalBlend = toolNormalPhase ? 1.0 : 0.0;
-
-    if (state.toolNormalBlend === undefined) state.toolNormalBlend = targetToolNormalBlend;
-    state.toolNormalBlend += (targetToolNormalBlend - state.toolNormalBlend) * responseBlend(12 * state.speed, delta);
-
-    const blend = state.toolNormalBlend;
-    const wristPitch = clamp(wr * (0.72 + 0.28 * blend), wristLimits.min, wristLimits.max);
-    const handPitchAngle = clamp(wr * (0.28 - 0.28 * blend), -wristLimits.max, wristLimits.max);
-
+    // The IK target assumes the entire tool points down. Apply its pitch before
+    // wrist roll: splitting it across the roll axis tilts the pad after a grab
+    // leaves the wrist at a nonzero angle (Rx * Ry * Rx is not a single Rx).
     state.shoulder.rotation.x = sh;
     state.elbow.rotation.x = el;
-    state.wrist.rotation.x = wristPitch;
-    state.handPitch.rotation.x = handPitchAngle;
+    state.wrist.rotation.x = clamp(wr, wristLimits.min, wristLimits.max);
+    state.handPitch.rotation.x = 0;
 
     // Wrist roll
     let rd = state.wristRollTarget - state.currentWristRoll;
     while (rd < -Math.PI) rd += Math.PI * 2;
     while (rd > Math.PI) rd -= Math.PI * 2;
-    state.currentWristRoll += rd * responseBlend(12 * state.speed, delta);
+    const rollStep = rd * responseBlend(12 * state.speed, delta);
+    state.currentWristRoll += state.grabbedItem
+        ? clamp(rollStep, -Math.PI * delta, Math.PI * delta)
+        : rollStep;
     state.wristRoll.rotation.y = state.currentWristRoll;
 
 

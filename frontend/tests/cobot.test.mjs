@@ -9,6 +9,9 @@ import { syncCobotConfig, disposeCobotState, resetCobotRun } from '../babylon/co
 import { currentDropTarget } from '../babylon/cobot/dropTargets.ts';
 import { reserveDropTarget, releaseDropReservation } from '../babylon/cobot/reservations.ts';
 import { updateCobotPath } from '../babylon/cobot/pathVisuals.ts';
+import { tickPickup } from '../babylon/cobot/pickup.ts';
+import { pickupContactState } from '../babylon/cobot/pickupTargets.ts';
+import { latchPickup, syncCarriedPart } from '../babylon/cobot/grasp.ts';
 const defaultLayout = structuredClone(factoryStore.getState().placedItems);
 
 function setup(t, { offset = 0, shape = 'disc', collisions = true, belt = false } = {}) {
@@ -353,4 +356,129 @@ test('follows a slowly moving conveyor part through pickup and release', t => {
     if (part.state === 'free' || part.state === 'targeted') part.pos.x += 0.5 * 0.55 / 60;
   });
   assert.equal(part.state, 'free');
+});
+
+test('attach retry follows a moving belt part instead of renewing a frozen target', t => {
+  const { state, part } = setup(t, { belt:true });
+  state.phase = 'pick_attach';
+  state.targetedItem = part;
+  part.state = 'targeted';
+  state.lockedPickupTarget = part.pos.clone().add(new Vector3(-0.3,0,0));
+  state.lockedPickupItemId = part.id;
+  state.lockedPickupUntil = 100;
+  const context = {state, delta:1/60, stepPos:new Vector3(0,1,2.5), mountPos:new Vector3(0,1,0),
+    L1:3, L2:3, L3:0.3, hasDrop:true, getAutoSlot:()=>null};
+  tickPickup(context);
+  const first = state.desiredTarget.x;
+  for (let frame=0; frame<5; frame++) {
+    part.pos.x += 0.46/60;
+    state.simTime += 1/60;
+    tickPickup(context);
+  }
+  assert.equal(state.phase, 'pick_attach');
+  assert.ok(state.desiredTarget.x > first + 0.02, 'contact target must advance with the conveyor');
+  assert.equal(state.lockedPickupTarget, null);
+});
+
+test('contact measures the live part, never a stale or predicted contact position', t => {
+  const {state, part} = setup(t, {belt:true});
+  state.phase = 'pick_attach';
+  state.targetedItem = part;
+  part.state = 'targeted';
+  const tip = state.gripperTip.getAbsolutePosition().clone();
+  state.lockedPickupTarget = tip.subtract(new Vector3(0,partHalfHeight(part)+0.03,0));
+  state.lockedPickupItemId = part.id;
+  state.lockedPickupUntil = 100;
+  part.pos.copyFrom(state.lockedPickupTarget).addInPlace(new Vector3(0.3,-0.2,0));
+  const contact = pickupContactState(state, part);
+  assert.ok(Math.abs(contact.horizontalDist - 0.3) < 1e-6);
+  assert.ok(Math.abs(contact.padGap - 0.23) < 1e-6);
+  assert.equal(contact.touchingPart, false);
+});
+
+test('latching preserves yaw, then the loaded wrist turns smoothly into drop alignment', t => {
+  const {state, part} = setup(t, {shape:'box'});
+  part.rotY = 2.8;
+  let previous = part.rotY;
+  let attached = false;
+  for(let frame=0; frame<12*60; frame++) {
+    tickCobot(state,1/60,true);
+    if(part.state==='grabbed') {
+      attached = true;
+      const yawStep = Math.abs(Math.atan2(Math.sin(part.rotY-previous),Math.cos(part.rotY-previous)));
+      assert.ok(yawStep <= Math.PI/60 + 1e-6, `instant yaw change: ${yawStep}`);
+      assert.ok(Math.abs(part.rotY-state.currentWristRoll-state.graspYawOffset)<1e-6);
+    }
+    previous=part.rotY;
+    if(state.lastDroppedItemId===part.id) break;
+  }
+  assert.ok(attached);
+  assert.equal(state.lastDroppedItemId,part.id);
+  assert.ok(Math.abs(Math.atan2(Math.sin(part.rotY),Math.cos(part.rotY)))<0.05, 'keep indexed drop alignment');
+});
+
+test('a new grasp preserves orientation across the angle wrap and replaces the previous grasp offset', t => {
+  const {state,part}=setup(t);
+  state.currentWristRoll=-3.1;
+  state.graspYawOffset=1.5;
+  part.rotY=3.1;
+  part.state='targeted';
+  state.targetedItem=part;
+  latchPickup(state,state.gripperTip.getAbsolutePosition(),true,()=>null);
+  syncCarriedPart(state);
+  assert.ok(Math.abs(Math.atan2(Math.sin(part.rotY-3.1),Math.cos(part.rotY-3.1)))<1e-6);
+  state.currentWristRoll+=0.1;
+  syncCarriedPart(state);
+  assert.ok(Math.abs(Math.atan2(Math.sin(part.rotY-3.2),Math.cos(part.rotY-3.2)))<1e-6);
+});
+
+test('the suction pad stays level through consecutive rotated pickups without restarting', t => {
+  const {state,part}=setup(t, {shape:'box'});
+  part.rotY=2.8;
+  runUntil(state,()=>state.lastDroppedItemId===part.id);
+  for (let cycle=0;cycle<3;cycle++) {
+    const next={...part,id:'consecutive-'+cycle,state:'free',rotY:[-1.6,2.4,0.7][cycle],pos:new Vector3(0,1.04,2.5)};
+    simState.items=[next];
+    let dropped=false;
+    for(let frame=0;frame<12*60;frame++) {
+      tickCobot(state,1/60,true);
+      state.handPitch.computeWorldMatrix(true);
+      const normal=state.handPitch.getDirection(Vector3.Up()).normalize();
+      assert.ok(normal.y < -0.99999, `tilted pad in cycle ${cycle+2}, phase ${state.phase}: ${normal.asArray()}`);
+      if(state.lastDroppedItemId===next.id) { dropped=true; break; }
+    }
+    assert.ok(dropped, `cycle ${cycle+2} stalled in ${state.phase}`);
+  }
+});
+
+test('default c2 returns from its rear drop without swinging outside the planned route', t => {
+  setup(t);
+  for(const existing of simState.cobotStates.values()) disposeCobotState(existing);
+  simState.reset();
+  const engine=new NullEngine();
+  t.after(()=>engine.dispose());
+  const layout=structuredClone(defaultLayout);
+  factoryStore.setState({placedItems:layout});
+  const self=layout.find(p=>p.id==='c2');
+  const {state}=createCobot(self,new Scene(engine));
+  simState.cobotStates.set(self.id,state);
+  state.obstacles=layout.filter(p=>p.id!==self.id&&p.type!=='camera');
+  const pick=self.config.program[0].pos;
+  const part={id:'return-part',shape:'disc',size:'medium',color:'#ef4444',pos:new Vector3(pick[0],1.0125,pick[2]),rotY:0,state:'free'};
+  simState.items=[part];
+  runUntil(state,()=>state.lastDroppedItemId===part.id);
+  let last=state.gripperTip.getAbsolutePosition().clone(), length=0, maxError=0;
+  const straight=Math.hypot(last.x-pick[0],last.z-pick[2]);
+  let returned=false;
+  for(let frame=0;frame<5*60;frame++) {
+    tickCobot(state,1/60,true);
+    const tip=state.gripperTip.getAbsolutePosition().clone();
+    length+=Vector3.Distance(last,tip);last=tip;
+    maxError=Math.max(maxError,Math.hypot(tip.x-state.ikTarget.x,tip.z-state.ikTarget.z));
+    if(state.phase==='idle' && Math.hypot(tip.x-pick[0],tip.z-pick[2])<0.1) {returned=true;break;}
+  }
+  assert.ok(returned, `return stalled in ${state.phase}`);
+  assert.ok(maxError<0.03, `actual hand strays ${maxError} from the IK path`);
+  assert.ok(length<straight+1.8, `return arc too wide: ${length} vs straight ${straight}`);
+  t.diagnostic(`return distance ${length.toFixed(2)}, maximum planar tracking error ${maxError.toFixed(4)}`);
 });

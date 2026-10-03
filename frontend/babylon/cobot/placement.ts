@@ -26,7 +26,11 @@ export function tickPlacement(context: { state: CobotState; delta: number; actua
                     supportTop + PICK_HOVER_CLEARANCE,
                     state.position[1] + 1.12
                 );
-                const peelY = Math.max(hoverY, supportTop + carriedPayloadHeight(state) + 0.12);
+                // Clear neighboring parts with the loaded tool before leaving
+                // the pickup area. A low taught point can otherwise stop the
+                // peel inside the collision envelope and trap recovery there.
+                const peelY = Math.max(hoverY, supportTop + carriedPayloadHeight(state) + 0.12,
+                    stackAwareClearanceAt(state, state.ikTarget.x, state.ikTarget.z, true));
                 state.desiredTarget.set(state.ikTarget.x, peelY, state.ikTarget.z);
                 if (actualTip.y >= peelY - 0.035) {
                     state.phase = 'lift';

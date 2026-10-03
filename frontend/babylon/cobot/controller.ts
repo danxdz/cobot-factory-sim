@@ -4,7 +4,7 @@ import { cobotDefaultAngles,cobotForearmLength,cobotUpperArmLength,cobotWristLen
 import { collectArmSamples,collisionSafetyEnabled } from './collision';
 import { COBOT_FOREARM_LENGTH,COBOT_GRIPPER_TIP_OFFSET,COBOT_HAND_LINK_LENGTH,COBOT_MOUNT_REACH_OFFSET,COBOT_UPPER_ARM_LENGTH,COBOT_WRIST_LINK_LENGTH,OVERDRIVE_DECAY_PER_SEC } from './constants';
 import { advanceMotion } from './motion';
-import { partHalfHeight } from './partGeometry';
+import { syncCarriedPart } from './grasp';
 import { tickProgram } from './program';
 import { tickRecovery } from './recovery';
 import { releaseDropReservation } from './reservations';
@@ -102,10 +102,7 @@ export function tickCobot(state: CobotState, delta: number, isRunning: boolean):
         state.desiredTarget.copyFrom(tip);
         state.lastProbePos.copyFrom(tip);
         state.targetTimer = 0; // Reset stall timer during tuning
-        if (state.grabbedItem) {
-            state.grabbedItem.pos.set(tip.x, tip.y - partHalfHeight(state.grabbedItem) - 0.001, tip.z);
-            state.grabbedItem.rotY = state.currentWristRoll;
-        }
+        syncCarriedPart(state);
         flushPhaseLog(state);
         return false;
     } else if (isStopped) {

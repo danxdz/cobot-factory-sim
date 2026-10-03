@@ -1,8 +1,9 @@
 import { Vector3 } from '@babylonjs/core';
 import { PICK_ALIGN_RADIUS,PICK_ANCHOR_MAX_OFFSET,PICK_ANCHOR_MIN_OFFSET,PICK_GRAB_RADIUS,PICK_HOVER_CLEARANCE,PICK_LEAD_TIME,PICK_SKIP_COOLDOWN,PICK_TARGET_LOCK_DURATION,PICK_TARGET_LOCK_ENTER_RADIUS } from './constants';
 import { PICK_HAND_CONTACT_TOLERANCE } from './contactConstants';
-import { driveTileAt,partHint,supportTopAt } from './geometry';
+import { driveTileAt,supportTopAt } from './geometry';
 import { clamp } from './math';
+import { latchPickup } from './grasp';
 import { PartLike,partHalfHeight,partRadiusForSpec } from './partGeometry';
 import { canLatchByProximity,clampTargetAroundAnchorXZ,currentPickTimeout,movingPickupWindowRadius,pickupAimPoint,pickupContactState,pickupContactTipY,pickupLatchPlanarRadius,pickupLatchVerticalRadius } from './pickupTargets';
 import { currentPickAnchor } from './programTargets';
@@ -236,21 +237,7 @@ export function tickPickup(context: { state: CobotState; delta: number; stepPos:
 	                            'pick_grabbed',
 	                            `item=${state.targetedItem.id} mode=descend_contact snap=${descendLatch.snapDist.toFixed(3)} planar=${descendLatch.planarDist.toFixed(3)} v=${descendLatch.verticalDist.toFixed(3)}`
 	                        );
-	                        state.targetedItem.pos.set(descendLatch.gripPose.x, descendLatch.gripPose.y - partHalfHeight(state.targetedItem) - 0.001, descendLatch.gripPose.z);
-	                        state.targetedItem.rotY = state.currentWristRoll;
-	                        state.targetedItem.state = 'grabbed';
-	                        state.grabbedItem = state.targetedItem;
-                        state.targetedItem = null;
-                        state.targetTimer = 0;
-                        state.blockedTimer = 0;
-                        state.lockedPickupTarget = null;
-                        state.lockedPickupItemId = null;
-                        state.lockedPickupUntil = 0;
-                        if (!hasDrop) {
-                            state.autoDropTarget = getAutoSlot(partHint(state.grabbedItem));
-	                        }
-	                        state.phase = 'pick_recenter';
-	                        state.waitTimer = 0;
+	                        latchPickup(state, descendLatch.gripPose, hasDrop, getAutoSlot);
 	                    } else if (
 	                        descendLatch &&
 	                        state.targetedItem &&
@@ -297,21 +284,7 @@ export function tickPickup(context: { state: CobotState; delta: number; stepPos:
 	                            'pick_grabbed',
 	                            `item=${state.targetedItem.id} mode=descend_close snap=${latch.snapDist.toFixed(3)} planar=${latch.planarDist.toFixed(3)} v=${latch.verticalDist.toFixed(3)}`
                         );
-                        state.targetedItem.pos.set(latch.gripPose.x, latch.gripPose.y - partHalfHeight(state.targetedItem) - 0.001, latch.gripPose.z);
-                        state.targetedItem.rotY = state.currentWristRoll;
-                        state.targetedItem.state = 'grabbed';
-                        state.grabbedItem = state.targetedItem;
-                        state.targetedItem = null;
-                        state.targetTimer = 0;
-                        state.blockedTimer = 0;
-                        state.lockedPickupTarget = null;
-                        state.lockedPickupItemId = null;
-                        state.lockedPickupUntil = 0;
-                        if (!hasDrop) {
-                            state.autoDropTarget = getAutoSlot(partHint(state.grabbedItem));
-	                        }
-	                        state.phase = 'pick_recenter';
-	                        state.waitTimer = 0;
+                        latchPickup(state, latch.gripPose, hasDrop, getAutoSlot);
 	                    } else if (
 	                        state.targetedItem &&
 	                        latch.planarDist > (targetOnDriveNow ? 0.55 : 0.38)
@@ -397,7 +370,7 @@ export function tickPickup(context: { state: CobotState; delta: number; stepPos:
 	                        ? clampTargetAroundAnchorXZ(pickAnchor, rawTarget, catchRadius)
 	                        : rawTarget.clone();
                     if (
-                        targetOnDriveNow &&
+                        !targetOnDriveNow &&
                         state.lockedPickupTarget &&
                         state.lockedPickupItemId === state.targetedItem.id &&
                         state.simTime < state.lockedPickupUntil
@@ -423,9 +396,10 @@ export function tickPickup(context: { state: CobotState; delta: number; stepPos:
 	                    const guardedPickY = Math.min(state.ikTarget.y, pickY + (hoverY - pickY) * (1 - descendBlend));
 	                    state.desiredTarget.set(target.x, guardedPickY, target.z);
                     if (targetOnDriveNow) {
-                        state.lockedPickupTarget = target.clone();
-                        state.lockedPickupItemId = state.targetedItem.id;
-                        state.lockedPickupUntil = state.simTime + 1.05;
+                        // A belt intercept must keep following the part through contact.
+                        state.lockedPickupTarget = null;
+                        state.lockedPickupItemId = null;
+                        state.lockedPickupUntil = 0;
                     }
                     const reachDist = Math.sqrt(
                         (target.x - mountPos.x) * (target.x - mountPos.x) +
@@ -455,21 +429,7 @@ export function tickPickup(context: { state: CobotState; delta: number; stepPos:
                             'pick_grabbed',
                             `item=${state.targetedItem.id} mode=attach_align snap=${latch.snapDist.toFixed(3)} planar=${latch.planarDist.toFixed(3)} v=${latch.verticalDist.toFixed(3)}`
                         );
-                        state.targetedItem.pos.set(latch.gripPose.x, latch.gripPose.y - partHalfHeight(state.targetedItem) - 0.001, latch.gripPose.z);
-                        state.targetedItem.rotY = state.currentWristRoll;
-                        state.targetedItem.state = 'grabbed';
-                        state.grabbedItem = state.targetedItem;
-                        state.targetedItem = null;
-                        state.targetTimer = 0;
-                        state.blockedTimer = 0;
-                        state.lockedPickupTarget = null;
-                        state.lockedPickupItemId = null;
-                        state.lockedPickupUntil = 0;
-                        if (!hasDrop) {
-                            state.autoDropTarget = getAutoSlot(partHint(state.grabbedItem));
-                        }
-                        state.phase = 'pick_recenter';
-                        state.waitTimer = 0;
+                        latchPickup(state, latch.gripPose, hasDrop, getAutoSlot);
                     } else if (state.targetedItem) {
                         logCobotEvent(
                             state,

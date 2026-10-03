@@ -13,6 +13,7 @@ import { tickPlacement } from './placement';
 import { currentPickWaitTarget,nextProgramActionIndex } from './programTargets';
 import type { CobotState } from './stateTypes';
 import { logCobotEvent,logStatusReason } from './telemetry';
+import { pickupSpaceBusy } from './neighbors';
 
 export function findPickupCandidateForStep(
     state: CobotState,
@@ -368,6 +369,12 @@ export function tickProgram(state: CobotState, delta: number, isRunning: boolean
 	                if (step.action === 'pick' && !state.grabbedItem && !allFull) {
 	                    const incoming = findPickupCandidateForStep(state, stepPos, mountPos, L1, L2, L3, hasDrop);
 		                    if (incoming) {
+		                        if (pickupSpaceBusy(state, incoming.pos)) {
+                                    state.targetSource = 'yield';
+                                    state.desiredTarget.copyFrom(state.idleTarget);
+                                    logStatusReason(state, 'neighbor_pickup_busy', 'Waiting for neighboring pickup to clear');
+                                    break;
+                                }
 		                        acquirePickupTarget(state, incoming);
 		                        break;
 		                    }

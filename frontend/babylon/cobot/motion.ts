@@ -1,6 +1,7 @@
 import { Color3,Vector3 } from '@babylonjs/core';
 import { updateCobotPath } from './pathVisuals';
 import { integrateToolVelocity } from './motionProfile';
+import { neighborApproachScale, yieldsToNeighbor } from './neighbors';
 import { simState } from '../../simState';
 import { factoryStore } from '../../store';
 import { PlacedItem } from '../../types';
@@ -8,7 +9,8 @@ import { armHitsObstacle,armHitsPart,clampPickupHandAboveParts,collectArmSamples
 import { COBOT_ARM_HARD_STOP_DIST,COBOT_ARM_REDUCED_SPEED_DIST,COBOT_BODY_D,COBOT_BODY_W,COBOT_NEIGHBOR_YIELD_TRIGGER,COBOT_PEDESTAL_HEIGHT,COBOT_PLATFORM_TOP_Y,COBOT_SELF_REDUCED_SPEED_DIST,CONTACT_STALL_TIMEOUT,DISC_RADIUS,HAND_SAFETY_EXTRA_RADIUS,MAX_RECOVERY_ATTEMPTS,OVERDRIVE_HIT_PENALTY,OVERDRIVE_STALL_PENALTY,PART_CONTACT_STOP_TIMEOUT,PART_CONTACT_WARN_TIMEOUT,PICK_GRAB_RADIUS,SAFETY_HARD_STOP_DIST,SAFETY_MIN_SPEED_FACTOR,SAFETY_REDUCED_SPEED_DIST,STALL_PROGRESS_EPSILON,STUCK_STALL_TIMEOUT } from './constants';
 import { currentDropTarget,isSelfPlatformDropPhase } from './dropTargets';
 import { carriedPayloadRadius,clampTargetAboveSupports,dropObstacles,isPickupContactOverride,itemFootprintHit,machineTopY,supportTopAt,toolSurfaceClearance } from './geometry';
-import { solvePose } from './kinematics';
+import { limitBaseTurnStep,solvePose } from './kinematics';
+import { syncCarriedPart } from './grasp';
 import { clamp,projectTargetToReachEnvelope } from './math';
 import { partHalfHeight,partRadiusForSpec } from './partGeometry';
 import { pickupContactState } from './pickupTargets';
@@ -368,40 +370,26 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
 	        }
 	    }
 
-    if (!relaxedContactMotion && nearestCobotPoint && nearestCobotClearance < COBOT_ARM_REDUCED_SPEED_DIST) {
+    // Pickup contact exceptions apply to the picked part/support, never to
+    // another robot. Keep neighbor clearance active during final descent too.
+    if (collisionsOn && nearestCobotPoint && nearestCobotClearance < COBOT_ARM_REDUCED_SPEED_DIST) {
         const selfId = state.selfItem?.id ?? '';
         const otherLoaded = nearestCobotId ? simState.cobotLoads[nearestCobotId] === true : false;
         const selfLoaded = !!state.grabbedItem;
-        const equalPriority = selfLoaded === otherLoaded;
-        const shouldYield =
-            (!selfLoaded && otherLoaded) ||
-            (equalPriority && !!nearestCobotId && selfId > nearestCobotId);
+        const shouldYield = yieldsToNeighbor(selfId, selfLoaded, nearestCobotId ?? '', otherLoaded);
 
         const toOther = nearestCobotPoint.subtract(wristPos);
         if (toOther.lengthSquared() > 0.000001) {
             toOther.normalize();
-            const towardOther = Vector3.Dot(desiredVelocity, toOther);
-            if (towardOther > 0) {
-                desiredVelocity.addInPlace(toOther.scale(-towardOther * (shouldYield ? 1.0 : 0.72)));
-            }
-
-            const clearance = Math.max(0, nearestCobotClearance);
-            const floorSpeed = shouldYield ? 0 : 0.22;
-            const clearanceScale = clamp(
-                (clearance - COBOT_ARM_HARD_STOP_DIST) /
-                Math.max(0.001, COBOT_ARM_REDUCED_SPEED_DIST - COBOT_ARM_HARD_STOP_DIST),
-                floorSpeed,
-                1
-            );
+            const clearanceScale = neighborApproachScale(desiredVelocity, toOther, nearestCobotClearance, shouldYield);
             desiredVelocity.scaleInPlace(clearanceScale);
-
-            if (shouldYield) {
-                const away = toOther.scale(-1);
-                away.y = 0;
-                if (away.lengthSquared() > 0.000001) {
-                    away.normalize();
-                    desiredVelocity.addInPlace(away.scale(cruiseSpeed * (1 - clearanceScale) * 0.32));
-                }
+            // Brake existing approach momentum as well as the next command.
+            // Separating motion is preserved so a retreat can finish.
+            const approachingSpeed = Vector3.Dot(state.ikVelocity, toOther);
+            if (approachingSpeed > 0 && nearestCobotClearance <= COBOT_ARM_HARD_STOP_DIST) {
+                state.ikVelocity.addInPlace(toOther.scale(-approachingSpeed));
+            }
+            if (clearanceScale < 1) {
                 state.targetSource = 'yield';
                 state.reducedSpeedActive = true;
                 state.safetySpeedFactor = Math.min(state.safetySpeedFactor, Math.max(0.05, clearanceScale));
@@ -410,6 +398,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
     }
 
     {
+        const previousTarget = state.ikTarget.clone();
         const step = integrateToolVelocity(state.ikVelocity, desiredVelocity, delta, accel, drag);
         // Only clamp a step that reaches the target along the intended direction.
         // Sideways momentum must not teleport the tool to a nearby waypoint.
@@ -420,6 +409,8 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
             state.ikTarget.addInPlace(step);
         }
         clampTargetAboveSupports(state, state.ikTarget, state.phase, !!state.grabbedItem);
+        const progress = limitBaseTurnStep(state, previousTarget, state.ikTarget, mountPos, delta);
+        if (progress < 1) state.ikVelocity.scaleInPlace(progress);
     }
 
     if (
@@ -517,12 +508,7 @@ export function advanceMotion(state: CobotState, delta: number, isRunning: boole
     }
 
     // Carry grabbed item
-    if (state.grabbedItem) {
-        state.gripperTip.computeWorldMatrix(true);
-        const wp = state.gripperTip.getAbsolutePosition();
-        state.grabbedItem.pos.set(wp.x, wp.y - partHalfHeight(state.grabbedItem) - 0.001, wp.z);
-        state.grabbedItem.rotY = state.currentWristRoll;
-    }
+    syncCarriedPart(state);
 
     // Keep release deterministic through state machine; avoid hidden auto-place teleports here.
 

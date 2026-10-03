@@ -100,3 +100,44 @@ Reproduced and corrected:
 - **Misleading path display:** the bright trajectory showed an entire forecast loop, including old/current points. It now shows only the remaining active route. The separate future-program preview is faint, and its line buffers resize when waypoint count changes. Preview planning no longer mutates the controller's avoidance side.
 
 Validation: 53 automated tests, TypeScript, and production build pass. Before the final initialization correction, isolated Chrome passed four pickup/drop restart cycles, both receiver types, and both default robots. The final version passed the full First Shift browser test in 55.24 simulated seconds with 8 red and 4 blue deliveries and zero rejects, plus pause/retry/timeout and Sandbox restoration. No captured browser errors. Custom saved layouts, arbitrary obstacles, and all joint-limit combinations remain outside that browser coverage.
+
+## Adjacent cobots and shared pickup areas
+
+Reproduced both arms entering permanent recovery when two cobots 2.5 units apart picked neighboring discs from the same table. Also reproduced symmetric idle yielding (both peers retreating) and non-robot sensor warnings incorrectly triggering neighbor parking.
+
+Parking and motion now share the same loaded-part/ID priority rule. General part/table warnings no longer trigger cooperative parking. Neighbor braking preserves the requested direction instead of injecting a sideways repulsion velocity, permits separating motion, and remains enabled during precise pickup/drop contact. The scene refreshes all neighbor pose samples before ticking controllers, including stopped robots.
+
+A pickup now checks the neighboring tool and active pickup/payload area before acquisition. A conflicting robot waits at home until the area clears. This prevents different part reservations from sending two arms into the same small workspace. The loaded pickup lift also uses stack-aware clearance; low taught pickup heights previously ended that lift inside a nearby part's collision margin, trapping recovery at the contact pose.
+
+Automated validation: 60 tests and the production build pass. Independent adjacent transfers finish by 3.48 simulated seconds; shared-table transfers finish by 6.10–6.27 seconds in both controller update orders. Coverage includes one-sided equal-priority yielding, loaded priority, non-robot sensor isolation, and approach/separation braking. These are bounded two-robot fixtures, not a global deadlock guarantee for arbitrary crowded layouts.
+
+The isolated Chrome fixture also passes: two robots 2.5 units apart take adjacent discs from one table, then score deliveries into separate receivers. Both finish by 6.59 seconds, and by 5.68 seconds after restarting; neither is safety-stopped and no browser runtime errors are captured. Run `node tests/browser-smoke.mjs --neighbors` against Vite on port 5188. Receiver positions are within the hover reach envelope. The initial browser fixture's exact unsorted drop points at Z=-2.5 were unreachable at receiver hover height and stalled in `hover_drop`; this remains part of the existing explicitly taught unreachable-target limitation, separate from neighbor coordination.
+
+
+## Pickup flicker and moving contact
+
+The scene compacted dead parts and their velocity maps without moving their mesh pool entries. The same frame's final transform sync then applied surviving parts to the wrong meshes, including hidden meshes. Meshes and geometry keys now follow their surviving items; retired meshes remain available for reuse. A held part keeps the same visible mesh even when an earlier pool entry disappears.
+
+The final conveyor attachment retry also renewed a frozen pickup target every tick. Moving attachments now track the live intercept, while stationary targets retain their position lock. Contact measurements use the actual part position rather than the closer of a forecast/locked position and the real part.
+
+Browser traces reproduced another visible discontinuity: a randomly oriented part snapped approximately 73?75 degrees to wrist yaw when grabbed. The shared grasp helper preserves the initial yaw offset and rotates the loaded wrist toward the existing zero-yaw drop alignment at a bounded angular speed. Carry synchronization is shared by normal motion, tuning, and recovery. The three latch branches now use one attachment transition.
+
+Validation: 66 automated tests and the production build pass. `node tests/browser-smoke.mjs --pickup` checks actual conveyor physics for disc, can, box, and pyramid, with an earlier mesh slot removed during each carry. All four preserve mesh identity/visibility and tool attachment, complete a drop in 3.22?3.92 simulated seconds at arm speed 1.5 and belt speed 0.5, and produce no browser runtime errors. The largest sampled yaw change falls to approximately 3 degrees per frame. Unit coverage also exercises stale contact locks, angle wrapping, bounded wrist rotation, final drop orientation, and neighboring robot transfers. These fixtures do not certify every saved layout or conveyor speed; simulation/render interpolation remains a separate limitation.
+
+
+## Angled hand after the first pickup (regression correction)
+
+The smooth wrist rotation exposed an incorrect pitch split in the existing IK pose: a wrist bend before the roll joint and a hand bend after it only cancel correctly when roll is zero. After the first rotated grab, the retained roll angle tilted the suction pad as the empty hand returned. The previous browser fixture restarted between shapes, masking that sequence.
+
+Automatic IK now applies the downward-tool pitch at the wrist before roll and keeps the downstream hand pitch neutral throughout the cycle, matching the straight-down tool length used in the position solver. The obsolete phase-dependent pitch blend has been removed. Manual joint tuning and configured wrist limits remain in force. Mesh rebuilds also retain the grasp yaw offset and wrist target together.
+
+A new regression failed on the old code immediately after the first drop, then passed after the pose correction. All 67 automated tests pass, along with the production build. The browser pickup test now runs all four shapes consecutively without resetting the robot and checks the actual world-space suction-pad normal every rendered frame. All four drops completed by 14.46 simulated seconds; maximum measured tilt was below 0.00001 degrees with default joint limits, with no missing meshes, detached payloads, safety stops, or browser runtime errors. Custom wrist limits can still prevent a vertical tool pose and are not overridden by this fix.
+
+
+## Wide return swing after a drop
+
+Reproduced default c2's visible hand deviating up to 1.38 world units from its planned Cartesian return. The route itself was short, but the shoulder/elbow advanced at Cartesian cruise speed while the base was still catching up under its angular speed limit. That mismatch produced a broad physical sweep outside the route drawn by the planner.
+
+Motion now bounds progress along each proposed Cartesian segment by the same per-frame angular budget used by the base pose solver. It scales the integrated velocity accordingly and lets the base catch up when needed. This keeps the proposed segment intact instead of projecting the hand sideways, preserves radial motion, and uses the shortest angular difference across the angle wrap. Existing lift clearance, obstacle planning, and neighbor braking remain active. Sharp turns may take longer than the previously inaccurate motion; this is route tracking, not a claim of globally optimal planning for arbitrary layouts.
+
+Validation: the 69-test suite passed, followed by the added default-c2 return regression (70 tests total), plus the production build. The return regression completes with 5.52 units of tool travel and less than 0.0001 units of planar tracking error. `node tests/browser-smoke.mjs --return` also passed in isolated Chrome: c1 completed three deliveries and c2 two, with 163 and 108 sampled return frames respectively, maximum planar tracking errors below 0.000001 units, level suction pads, and no browser runtime errors.

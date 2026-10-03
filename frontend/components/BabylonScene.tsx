@@ -23,6 +23,7 @@ Vector3
 import HavokPhysics from '@babylonjs/havok';
 import React,{ useEffect,useRef } from 'react';
 import { disposeCobotState,resetCobotRun,syncCobotConfig } from '../babylon/cobot/lifecycle';
+import { collectArmSamples } from '../babylon/cobot/collision';
 import { COBOT_PEDESTAL_HEIGHT,COBOT_PEDESTAL_SAFEZONE_RADIUS,CobotState,createCobot,tickCobot } from '../babylon/cobotMesh';
 import {
 createBelt,
@@ -35,6 +36,7 @@ createSender,
 createTable
 } from '../babylon/entityMeshes';
 import { simState } from '../simState';
+import { compactPartPool,remapPartChannel } from '../babylon/partPool';
 import { FIRST_SHIFT } from '../game/challenge';
 import { machineTopY } from '../babylon/cobot/geometry';
 import { factoryStore } from '../store';
@@ -365,6 +367,7 @@ export const BabylonScene: React.FC = () => {
                             state.ikVelocity.copyFrom(oldState.ikVelocity);
                             state.desiredTarget.copyFrom(oldState.desiredTarget);
                             state.currentWristRoll = oldState.currentWristRoll;
+                            state.wristRollTarget = oldState.wristRollTarget;
                             state.currentGripperPos = oldState.currentGripperPos;
                             state.gripperOpen = oldState.gripperOpen;
                             
@@ -378,6 +381,7 @@ export const BabylonScene: React.FC = () => {
                             state.stepIndex = oldState.stepIndex;
                             state.targetedItem = oldState.targetedItem;
                             state.grabbedItem = oldState.grabbedItem;
+                            state.graspYawOffset = oldState.graspYawOffset;
                             state.waitTimer = oldState.waitTimer;
                             state.targetTimer = oldState.targetTimer;
                             state.skippedTargetIds = { ...oldState.skippedTargetIds };
@@ -396,7 +400,6 @@ export const BabylonScene: React.FC = () => {
                             state.dropExitTarget = oldState.dropExitTarget?.clone() ?? null;
                             state.activeDropTarget = oldState.activeDropTarget?.clone() ?? null;
                             state.autoDropTarget = oldState.autoDropTarget?.clone() ?? null;
-                            state.toolNormalBlend = oldState.toolNormalBlend;
                             state.lastProbePos.copyFrom(oldState.lastProbePos);
                         }
                         cobotStates.set(item.id, state);
@@ -1363,6 +1366,14 @@ export const BabylonScene: React.FC = () => {
             const simActive = isRunning && !isPaused;
             const cobotDelta = simActive ? delta : Math.max(0.0001, engine.getDeltaTime() / 1000);
 
+            // Everyone observes the same pre-tick poses, including stopped
+            // robots. Avoid mixing stale neighbor samples with current poses.
+            for (const [id, cState] of cobotStates) {
+                cState.wristRoll.computeWorldMatrix(true);
+                simState.cobotWrists[id] = cState.wristRoll.getAbsolutePosition().clone();
+                simState.cobotArmSamples[id] = collectArmSamples(cState);
+                simState.cobotLoads[id] = !!cState.grabbedItem;
+            }
             for (const [id, cState] of cobotStates) {
                 try {
                     const collided = tickCobot(cState, cobotDelta, simActive);
@@ -1719,22 +1730,11 @@ export const BabylonScene: React.FC = () => {
             });
 
             if (simState.items.some(i => i.state === 'dead')) {
-                const kept: typeof simState.items = [];
-                const nextVelY = new Map<number, number>();
-                const nextVelXZ = new Map<number, Vector3>();
-                const nextSpinY = new Map<number, number>();
-                simState.items.forEach((item, oldIdx) => {
-                    if (item.state === 'dead') return;
-                    const newIdx = kept.length;
-                    kept.push(item);
-                    if (velY.has(oldIdx)) nextVelY.set(newIdx, velY.get(oldIdx)!);
-                    if (velXZ.has(oldIdx)) nextVelXZ.set(newIdx, velXZ.get(oldIdx)!.clone());
-                    if (spinY.has(oldIdx)) nextSpinY.set(newIdx, spinY.get(oldIdx)!);
-                });
-                simState.items = kept;
-                velY.clear(); nextVelY.forEach((v, k) => velY.set(k, v));
-                velXZ.clear(); nextVelXZ.forEach((v, k) => velXZ.set(k, v));
-                spinY.clear(); nextSpinY.forEach((v, k) => spinY.set(k, v));
+                const compacted = compactPartPool(simState.items, partMeshes, partMeshKinds);
+                simState.items = compacted.items;
+                remapPartChannel(velY, compacted.survivorIndices);
+                remapPartChannel(velXZ, compacted.survivorIndices);
+                remapPartChannel(spinY, compacted.survivorIndices);
             }
 
             // ── Part collision repulsion (belt/floor level only) ────

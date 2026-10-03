@@ -8,6 +8,7 @@ import { pointSegmentDistSq2D } from '../babylon/cobot/geometry.ts';
 import { simState } from '../simState.ts';
 import { tickCobot } from '../babylon/cobot/controller.ts';
 import { activeCobotPath } from '../babylon/cobot/pathVisuals.ts';
+import { limitBaseTurnStep } from '../babylon/cobot/kinematics.ts';
 
 function setup(t) {
   simState.reset();
@@ -79,4 +80,27 @@ test('pickup prediction applies measured belt velocity once and ignores old came
   state.cameras = [{ id: 'cam' }];
   simState.cameraDetections = [{ cameraId: 'cam', itemId: 'part', pos: new Vector3(-1, 1.05, 2), confidence: 1, planarOffset: 0, color: item.color, size: item.size }];
   assert.ok(Vector3.Distance(pickupAimPoint(state, item), expected) < 1e-6, 'old detections must not pull a live intercept backward');
+});
+
+test('a fast return advances only as far along its segment as the base can turn', t => {
+  const state=setup(t), mount=new Vector3(0,1,0);
+  state.speed=1.5;
+  state.baseRotY=0;
+  state.basePivot.rotation.y=Math.atan2(0.6,0.1);
+  const start=new Vector3(0.6,2,0.1), next=new Vector3(0.6,2,-0.1);
+  const progress=limitBaseTurnStep(state,start,next,mount,1/60);
+  assert.ok(progress>0 && progress<1);
+  assert.equal(next.x,0.6,'do not project sideways off the collision-clear segment');
+  assert.equal(next.y,2);
+  assert.ok(Math.abs(Math.atan2(next.x,next.z)-state.basePivot.rotation.y)<=3.2*1.1/60+1e-7);
+});
+
+test('base turn limiting preserves radial motion and uses the short turn across angle wrap', t => {
+  const state=setup(t), mount=new Vector3(0,1,0);
+  state.baseRotY=0;
+  state.basePivot.rotation.y=Math.PI-0.01;
+  const start=new Vector3(0.02,2,-2), next=new Vector3(-0.02,2,-2);
+  assert.equal(limitBaseTurnStep(state,start,next,mount,1/60),1);
+  state.basePivot.rotation.y=0;
+  assert.equal(limitBaseTurnStep(state,new Vector3(0,2,1),new Vector3(0,3,2),mount,1/60),1);
 });

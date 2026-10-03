@@ -2,7 +2,7 @@ import { Vector3 } from '@babylonjs/core';
 import { armHitsObstacle,armHitsPart } from './collision';
 import { solvePose } from './kinematics';
 import { releasePickup,resetExecution } from './lifecycle';
-import { partHalfHeight } from './partGeometry';
+import { syncCarriedPart } from './grasp';
 import type { CobotState } from './stateTypes';
 import { flushPhaseLog } from './telemetry';
 
@@ -24,11 +24,7 @@ export function tickRecovery(state: CobotState, delta: number, mountPos: Vector3
         state.ikTarget = Vector3.Lerp(state.ikTarget, state.lastSafeIkTarget, travel / distance);
         solvePose(state, delta, mountPos, L1, L2, L3);
     }
-    if (state.grabbedItem) {
-        state.gripperTip.computeWorldMatrix(true);
-        const tip = state.gripperTip.getAbsolutePosition();
-        state.grabbedItem.pos.set(tip.x, tip.y - partHalfHeight(state.grabbedItem) - 0.001, tip.z);
-    }
+    syncCarriedPart(state);
     if (state.recoveryElapsed > 0.3 && !armHitsObstacle(state, state.obstacles) && !armHitsPart(state)) {
         state.safetyStopped = false;
         resetExecution(state);

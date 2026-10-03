@@ -427,7 +427,7 @@ export function createCobot(item: PlacedItem, scene: Scene, isGhost = false): { 
         lastReplanTargetKey: '',
         lockedDropTarget: null,
         phase: 'idle', stepIndex: 0,
-        targetedItem: null, grabbedItem: null, waitTimer: 0,
+        targetedItem: null, grabbedItem: null, graspYawOffset: 0, waitTimer: 0,
         autoDropTarget: null,
         activeDropTarget: null,
         position: item.position, baseRotY,

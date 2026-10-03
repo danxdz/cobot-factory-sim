@@ -26,6 +26,12 @@ npm.cmd audit
 
 With a dev server on port 5188, run `node tests/browser-smoke.mjs --challenge` to verify the game flow in an isolated Chrome profile, including actual robot deliveries and Sandbox restoration.
 
+Run `node tests/browser-smoke.mjs --neighbors` to check two adjacent robots sharing a pickup table, including receiver scoring and a restart. Robots now wait outside an occupied pickup area and resume when the neighboring tool and payload clear it.
+
+Run `node tests/browser-smoke.mjs --pickup` to check consecutive moving conveyor pickups for all four shapes without restarting, a level suction pad, continuous grab rotation, and mesh visibility when another part disappears during a carry. Use the same dev server on port 5188.
+
+Run `node tests/browser-smoke.mjs --return` to check both default cobots over repeated deliveries and verify that their hands follow the planned return route with level suction pads.
+
 The public robot entrypoint is `frontend/babylon/cobotMesh.ts`. Controller orchestration, program execution, pickup, placement, reach, planning, collision, motion, lifecycle, and visualization live in separate modules under `frontend/babylon/cobot/`.
 
 See [AUDIT.md](AUDIT.md) for reproduced bugs, verification results, browser-test instructions, and remaining limitations.
